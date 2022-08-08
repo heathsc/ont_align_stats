@@ -9,26 +9,66 @@ use crate::{
     stats::{StatType, Stats},
 };
 
-fn get_start_end(cigar: &Cigar) -> (usize, usize) {
+fn get_start_end(cigar: &Cigar, rev: bool, read_len: usize) -> Option<(usize, usize)> {
     let mut first = 0;
     let mut last = 0;
     let mut started = false;
     let mut x = 0;
     for elem in cigar.iter() {
         match elem.op() {
-            CigarOp::HardClip | CigarOp::SoftClip | CigarOp::Ins => x += elem.op_len(),
+            CigarOp::HardClip | CigarOp::SoftClip | CigarOp::Ins => x += elem.op_len() as usize,
             CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
                 if !started {
                     started = true;
                     first = x;
                 }
-                x += elem.op_len();
+                x += elem.op_len() as usize;
                 last = x;
             }
             _ => {}
         }
     }
-    (first as usize, last as usize)
+    adjust_start_end(first, last, x, rev, read_len)
+}
+
+fn adjust_start_end(
+    first: usize,
+    last: usize,
+    x: usize,
+    rev: bool,
+    read_len: usize,
+) -> Option<(usize, usize)> {
+    if read_len != x || last <= first {
+        None
+    } else {
+        if rev {
+            Some((read_len - last, read_len - 1 - first))
+        } else {
+            Some((first, last - 1))
+        }
+    }
+}
+
+fn sa_get_start_end(it: &mut SaTagIter, rev: bool, read_len: usize) -> Option<(usize, usize)> {
+    let mut first = 0;
+    let mut last = 0;
+    let mut started = false;
+    let mut x = 0;
+    for (c, l) in it {
+        match c {
+            'H' | 'S' | 'I' => x += l,
+            'M' | '=' | 'X' => {
+                if !started {
+                    started = true;
+                    first = x;
+                }
+                x += l;
+                last = x;
+            }
+            _ => {}
+        }
+    }
+    adjust_start_end(first, last, x, rev, read_len)
 }
 
 struct SaTagIter<'a> {
@@ -77,60 +117,89 @@ impl<'a> Iterator for SaTagIter<'a> {
         }
     }
 }
-fn process_primary_read(rec: &mut BamRec, st: &mut Stats) {
+
+fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     st.incr_mapq(rec.qual());
     if let Some(cigar) = rec.cigar() {
         // Find start and end points of aligned bases on read
         let reverse = (rec.flag() & BAM_FREVERSE) != 0;
-        let (start, stop) = {
-            let (x, y) = get_start_end(&cigar);
-            if reverse {
-                (y, x)
-            } else {
-                (x, y)
-            }
-        };
-
-        // Look for supplementary mappings for this read
-        if let Some(Ok(sa)) = rec.get_tag("SA", 'Z').map(|x| std::str::from_utf8(x)) {
-            debug!("Found SA tag for read {}", rec.qname().unwrap());
-            // Collect the start and end points of all mappings for this read
+        if let Some((start, stop)) = get_start_end(&cigar, reverse, read_len) {
             let mut v = vec![(start, stop)];
-            for s in sa.split(';') {
-                if s.len() < 2 {
-                    continue;
-                }
-                let fd: Vec<_> = s.split(',').collect();
-                if fd.len() == 6 {
-                    if let Some(rev) = match fd[2] {
-                        "+" => Some(false),
-                        "-" => Some(true),
-                        _ => {
-                            warn!("Illegal SA tag {} - strand not + or -", s);
-                            None
-                        }
-                    } {
-                        let mut it = SaTagIter::new(fd[3]);
-                        println!("SA Tag: {}", fd[3]);
-                        for (c, l) in it {
-                            println!("{} {}", c, l);
-                        }
-                        println!();
+            // Look for supplementary mappings for this read
+            if let Some(Ok(sa)) = rec.get_tag("SA", 'Z').map(|x| std::str::from_utf8(x)) {
+                trace!("Found SA tag for read {}", rec.qname().unwrap());
+                // Collect the start and end points of all mappings for this read
+                for s in sa.split(';') {
+                    if s.len() < 2 {
+                        continue;
                     }
-                } else {
-                    warn!(
-                        "Illegal SA tag {} (wrong number of fields {} instead of 6) >{}<",
-                        s,
-                        fd.len(),
-                        sa
-                    )
+                    let fd: Vec<_> = s.split(',').collect();
+                    if fd.len() == 6 {
+                        if let Some(rev) = match fd[2] {
+                            "+" => Some(false),
+                            "-" => Some(true),
+                            _ => {
+                                warn!("Illegal SA tag {} - strand not + or -", s);
+                                None
+                            }
+                        } {
+                            let mut it = SaTagIter::new(fd[3]);
+                            if let Some((a, b)) = sa_get_start_end(&mut it, rev, read_len) {
+                                v.push((a, b))
+                            } else {
+                                warn!(
+                                    "Illegal SA Tag {} for read {} (wrong size)",
+                                    fd[3],
+                                    rec.qname().unwrap()
+                                )
+                            }
+                        }
+                    } else {
+                        warn!(
+                            "Illegal SA tag {} (wrong number of fields {} instead of 6) >{}<",
+                            s,
+                            fd.len(),
+                            sa
+                        )
+                    }
                 }
+                // Sort by starting point
+                v.sort_unstable_by_key(|(x, _)| *x);
             }
+            let n_splits = v.len();
+
+            // Get total used bases excluding any overlaps
+            let mut lim = v[0].1 + 1;
+            let mut used = lim - v[0].0;
+            for v1 in &v[1..] {
+                if v1.1 >= lim {
+                    used += v1.1 + 1 - lim;
+                }
+                lim = lim.max(v1.1 + 1);
+            }
+            trace!(
+                "Read {}: len {}, n_splits {}, used {} ({}%)",
+                rec.qname().unwrap(),
+                read_len,
+                n_splits,
+                used,
+                (used as f64) * 100.0 / (read_len as f64)
+            );
+            if used > read_len {
+                for (a, b) in v.iter() {
+                    println!(" -> {} {}", a, b);
+                }
+                panic!("{} {} {} {}", read_len, used, reverse, n_splits)
+            }
+            st.update_readlen_stats(read_len, used);
+            st.incr_n_splits(n_splits);
+        } else {
+            warn!("Illegal CIGAR for read {}", rec.qname().unwrap())
         }
     }
 }
 
-pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<usize>, rx: Receiver<String>) {
+pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<Stats>, rx: Receiver<String>) {
     debug!("Starting reader thread {}", ix);
 
     let mut hts = input::open_input(
@@ -168,6 +237,11 @@ pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<usize>, rx: Re
             if chk_flg(BAM_FMUNMAP) {
                 st.incr(StatType::Unmapped)
             } else {
+                st.incr(StatType::Mapped);
+                let seq_qual = rec
+                    .get_seq_qual()
+                    .expect("Error getting sequence and qualities");
+                let read_len = seq_qual.len();
                 if chk_flg(BAM_FREVERSE) {
                     st.incr(StatType::Reversed)
                 }
@@ -178,7 +252,7 @@ pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<usize>, rx: Re
                 } else if chk_flg(BAM_FQCFAIL) {
                     st.incr(StatType::QcFail)
                 } else if !chk_flg(BAM_FSUPPLEMENTARY) {
-                    process_primary_read(&mut rec, &mut st);
+                    process_primary_read(&mut rec, &mut st, read_len);
                 }
             }
         }
@@ -190,5 +264,6 @@ pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<usize>, rx: Re
             reg
         );
     }
+    tx.send(st).expect("Error sending Stats to collector");
     debug!("Terminating reader thread {}", ix);
 }

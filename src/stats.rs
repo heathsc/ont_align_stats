@@ -1,3 +1,5 @@
+use std::{collections::BTreeMap, ops::AddAssign};
+
 pub enum StatType {
     Mappings = 0,
     Reads,
@@ -8,18 +10,46 @@ pub enum StatType {
     QcFail,
     Duplicate,
     Paired,
+    TotalBases,
+    MappedBases,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Stats {
-    counts: [usize; 9],
+    counts: [usize; 11],
+    mapped_pctg: Vec<usize>,
     primary_mapq: Vec<usize>,
+    read_len: BTreeMap<usize, usize>,
+    n_splits: BTreeMap<usize, usize>,
+}
+
+fn add_vec(v1: &mut [usize], v2: &[usize]) {
+    for (ct, ct1) in v1.iter_mut().zip(v2.iter()) {
+        *ct += ct1
+    }
+}
+
+fn add_btreemap(bt1: &mut BTreeMap<usize, usize>, vt2: &BTreeMap<usize, usize>) {
+    for (x, y) in vt2.iter() {
+        *bt1.entry(*x).or_insert(0) += *y
+    }
+}
+
+impl AddAssign for Stats {
+    fn add_assign(&mut self, other: Self) {
+        add_vec(&mut self.counts, &other.counts);
+        add_vec(&mut self.mapped_pctg, &other.mapped_pctg);
+        add_vec(&mut self.primary_mapq, &other.primary_mapq);
+        add_btreemap(&mut self.read_len, &other.read_len);
+        add_btreemap(&mut self.n_splits, &other.n_splits);
+    }
 }
 
 impl Stats {
     pub fn new() -> Self {
         let mut st = Self::default();
         st.primary_mapq.resize(256, 0);
+        st.mapped_pctg.resize(101, 0);
         st
     }
 
@@ -31,11 +61,36 @@ impl Stats {
         self.primary_mapq[q as usize] += 1
     }
 
+    pub fn update_readlen_stats(&mut self, rl: usize, used: usize) {
+        assert!(used <= rl);
+        let p = (100.0 * (used as f64) / (rl as f64)).round() as usize;
+        *self.read_len.entry(rl).or_insert(0) += 1;
+        self.counts[StatType::TotalBases as usize] += rl;
+        self.counts[StatType::MappedBases as usize] += used;
+        self.mapped_pctg[p] += 1
+    }
+
+    pub fn incr_n_splits(&mut self, n_splits: usize) {
+        *self.n_splits.entry(n_splits).or_insert(0) += 1;
+    }
+
     pub fn counts(&self, ty: StatType) -> usize {
         self.counts[ty as usize]
     }
 
     pub fn mapq(&self) -> &[usize] {
         &self.primary_mapq
+    }
+
+    pub fn read_len(&self) -> &BTreeMap<usize, usize> {
+        &self.read_len
+    }
+
+    pub fn n_splits(&self) -> &BTreeMap<usize, usize> {
+        &self.n_splits
+    }
+
+    pub fn mapped_pctg(&self) -> &[usize] {
+        &self.mapped_pctg
     }
 }
