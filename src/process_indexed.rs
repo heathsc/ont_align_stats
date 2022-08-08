@@ -6,7 +6,6 @@ use std::{
 use anyhow::{Context, Error};
 use crossbeam_channel::bounded;
 use crossbeam_utils::thread;
-use r_htslib::*;
 
 use crate::{collect, config::Config, input, read, regions::Regions};
 
@@ -45,7 +44,9 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
         // Send regions to readers
         for reg in regions.iter() {
             let s = format!("{}", reg);
-            region_tx.send(s).expect("Error sending region message");
+            region_tx
+                .send((s, reg.mappability()))
+                .expect("Error sending region message");
         }
         drop(region_tx);
 

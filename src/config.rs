@@ -8,7 +8,10 @@ pub struct Config {
     dir: Option<PathBuf>,
 
     // Read Select options
+    // Minimum MAPQ for a mapping to be considered for the coverage stats
     min_mapq: usize,
+    // Minimum base quality taken into account for the coverage stats
+    min_qual: usize,
 
     // Operation options
     n_tasks: usize,
@@ -46,8 +49,14 @@ impl Config {
     pub fn set_min_mapq(&mut self, x: usize) {
         self.min_mapq = x
     }
-    pub fn min_maxq(&self) -> usize {
+    pub fn set_min_qual(&mut self, x: usize) {
+        self.min_qual = x
+    }
+    pub fn min_mapq(&self) -> usize {
         self.min_mapq
+    }
+    pub fn min_qual(&self) -> usize {
+        self.min_qual
     }
     pub fn set_threads_per_task(&mut self, x: usize) {
         self.threads_per_task = x

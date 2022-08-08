@@ -116,7 +116,14 @@ fn cli_model() -> ArgMatches {
                 .short('q').long("min-pcnt")
                 .takes_value(true).value_name("NUMBER")
                 .default_value("10")
-                .help("Minimum % samples passing filter for entry to be output")
+                .help("Minimum MAXQ for mapping statistics")
+        )
+        .arg(
+            Arg::new("min_qual")
+                .short('b').long("min-qual")
+                .takes_value(true).value_name("NUMBER")
+                .default_value("10")
+                .help("Minimum base quality for coverage statistics")
         )
         .arg(
             Arg::new("prefix")
@@ -198,7 +205,10 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
         m.values_of("region").map(Regions::from_str_vec)
     }
     .unwrap_or_else(|| Regions::from_str_vec(&seq))?;
-
+    
+    // Fill in end values if not present
+    regions.fix_open_intervals(&seq, &lengths);
+    
     // Threads argument
     let n_tasks = usize::from(
         parse::<NonZeroUsize>(
@@ -245,6 +255,7 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
     cfg.set_n_tasks(n_tasks);
     cfg.set_mappability(map);
     cfg.set_min_mapq(m.value_of_t("min_maxq").unwrap());
+    cfg.set_min_qual(m.value_of_t("min_qual").unwrap());
     cfg.set_threads_per_task(m.value_of_t("threads_per_task").unwrap());
     if let Some(s) = reference {
         cfg.set_reference(s)

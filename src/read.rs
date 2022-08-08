@@ -40,12 +40,10 @@ fn adjust_start_end(
 ) -> Option<(usize, usize)> {
     if read_len != x || last <= first {
         None
+    } else if rev {
+        Some((read_len - last, read_len - 1 - first))
     } else {
-        if rev {
-            Some((read_len - last, read_len - 1 - first))
-        } else {
-            Some((first, last - 1))
-        }
+        Some((first, last - 1))
     }
 }
 
@@ -199,7 +197,54 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     }
 }
 
-pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<Stats>, rx: Receiver<String>) {
+fn process_coverage(
+    rec: &mut BamRec,
+    seq_qual: &SeqQual,
+    cov: &mut [Option<usize>],
+    begin: usize,
+    min_qual: u8,
+) {
+    if let Some(cigar) = rec.cigar() {
+        let mut x = rec.pos().expect("No start position for mapped read");
+        let cov_len = cov.len();
+        let mut sq = seq_qual.iter().map(|x| (*x & 3, *x >> 2));
+        for elem in cigar.iter() {
+            let l = elem.op_len() as usize;
+            assert!(l > 0, "Zero length cigar element");
+            match elem.op() {
+                CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
+                    for k in 0..l {
+                        let (c, q) = sq
+                            .next()
+                            .expect("Mismatch between Cigar and sequence length");
+                        if q >= min_qual && x >= begin {
+                            if x - begin >= cov_len {
+                                break;
+                            }
+                            if let Some(tp) = cov[x - begin].as_mut() {
+                                *tp += 1
+                            }
+                        }
+                        x += 1;
+                    }
+                }
+                CigarOp::SoftClip | CigarOp::Ins => {
+                    sq.nth(l - 1);
+                }
+                CigarOp::Del => x += l,
+                _ => (),
+            }
+        }
+    }
+}
+
+pub fn reader(
+    cfg: &Config,
+    ix: usize,
+    in_file: &Path,
+    tx: Sender<Stats>,
+    rx: Receiver<(String, Option<&Vec<[usize; 2]>>)>,
+) {
     debug!("Starting reader thread {}", ix);
 
     let mut hts = input::open_input(
@@ -209,14 +254,51 @@ pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<Stats>, rx: Re
         cfg.threads_per_task().min(4),
     )
     .expect("Error opening input file in thread");
+    let min_qual = cfg.min_qual().min(255) as u8;
+    let min_mapq = cfg.min_mapq().min(255) as u8;
 
+    let mut cov = Vec::new();
     let mut rec = BamRec::new().expect("Could not allocate new Bam Record");
-    let mut s = kstring_t::new();
     let mut st = Stats::new();
     let mut pair_warning = false;
-    while let Ok(reg) = rx.recv() {
-        debug!("Reader {} received {}", ix, reg);
+    while let Ok((reg, mappability)) = rx.recv() {
         let rlist = hts.make_region_list(&[&reg]);
+        assert_eq!(rlist.len(), 1);
+        let begin = rlist[0].begin() as usize;
+        let reg_len = rlist[0].end() as usize + 1 - begin;
+        assert!(reg_len > 0);
+        debug!(
+            "Reader {} received {} {} - {} len {}",
+            ix,
+            reg,
+            rlist[0].begin(),
+            rlist[0].end(),
+            reg_len
+        );
+        cov.clear();
+        cov.reserve(reg_len as usize);
+
+        if let Some(m) = mappability {
+            let mut x = begin;
+            for mv in m.iter() {
+                assert!(mv[0] >= x);
+                for _ in x..mv[0] {
+                    cov.push(None)
+                }
+                for _ in mv[0]..=mv[1] {
+                    cov.push(Some(0))
+                }
+                x = mv[1] + 1;
+            }
+            for _ in x..=rlist[0].end() as usize {
+                cov.push(None)
+            }
+        } else {
+            for _ in 0..reg_len {
+                cov.push(Some(0))
+            }
+        };
+
         let mut rdr: HtsItrReader<BamRec> = hts.itr_reader(&rlist);
         while rdr.read(&mut rec).expect("Error reading from input file") {
             //            rec.format(rdr.header().unwrap(), &mut s)?;
@@ -251,10 +333,18 @@ pub fn reader(cfg: &Config, ix: usize, in_file: &Path, tx: Sender<Stats>, rx: Re
                     st.incr(StatType::Duplicate)
                 } else if chk_flg(BAM_FQCFAIL) {
                     st.incr(StatType::QcFail)
-                } else if !chk_flg(BAM_FSUPPLEMENTARY) {
-                    process_primary_read(&mut rec, &mut st, read_len);
+                } else {
+                    if !chk_flg(BAM_FSUPPLEMENTARY) {
+                        process_primary_read(&mut rec, &mut st, read_len);
+                    }
+                    if rec.qual() >= min_mapq {
+                        process_coverage(&mut rec, &seq_qual, &mut cov, begin, min_qual)
+                    }
                 }
             }
+        }
+        for x in cov.iter().flatten() {
+            st.incr_coverage(*x)
         }
         info!(
             "Reader {} read {} records {} reads from {}",

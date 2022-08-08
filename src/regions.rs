@@ -5,7 +5,6 @@ use std::{
     io::BufRead,
     rc::Rc,
     slice,
-    sync::Arc,
 };
 
 use crate::mappability::Mappability;
@@ -71,7 +70,7 @@ pub struct Region {
     contig: Rc<str>,
     start: usize,
     end: Option<usize>,
-    map: Option<Vec<[usize; 2]>>,
+    mappability: Option<Vec<[usize; 2]>>,
 }
 
 impl Ord for Region {
@@ -160,6 +159,10 @@ impl Region {
             }
         }
     }
+
+    pub fn mappability(&self) -> Option<&Vec<[usize; 2]>> {
+        self.mappability.as_ref()
+    }
 }
 
 #[derive(Default)]
@@ -208,7 +211,7 @@ impl Regions {
             contig,
             start,
             end,
-            map: None,
+            mappability: None,
         };
         self.ctg_reg.get_mut(ctg).unwrap().push(region);
         Ok(())
@@ -310,7 +313,7 @@ impl Regions {
                             contig: Rc::clone(ctg),
                             start: x,
                             end: Some(x + s),
-                            map: None,
+                            mappability: None,
                         };
                         trace!("Region {} (split)", reg1);
                         nvec.push(reg1);
@@ -352,7 +355,7 @@ impl Regions {
                                     contig: Rc::clone(ctg),
                                     start: reg.start.max(map_reg[0][0]),
                                     end: Some(map_reg[i - 1][1]),
-                                    map: Some(map_reg),
+                                    mappability: Some(map_reg),
                                 };
                                 trace!("(A) Adding region {}.  Subregions: {}", reg1, i);
                                 nv.push(reg1);
@@ -368,7 +371,7 @@ impl Regions {
                         reg.start = reg.start.max(map_reg[0][0]);
                         reg.end = reg.end.map(|x| x.min(map_reg[i - 1][1]));
                         trace!("(B) Adding region {}.  Subregions: {}", reg, map_reg.len());
-                        reg.map = Some(map_reg);
+                        reg.mappability = Some(map_reg);
                         nv.push(reg);
                     }
                 }
@@ -384,12 +387,22 @@ impl Regions {
     pub fn iter(&self) -> RegionIter {
         let mut reg_vec = self.ctg_reg.values();
         let regs = reg_vec.next().map(|v| v.iter());
-
         RegionIter { reg_vec, regs }
     }
 
     pub fn len(&self) -> usize {
         self.ctg_reg.values().map(|v| v.len()).sum()
+    }
+
+    pub fn fix_open_intervals(&mut self, seq: &[&str], len: &[usize]) {
+        let shash: HashMap<_, _> = seq.iter().zip(len.iter()).map(|(s, x)| (*s, *x)).collect();
+        for (ctg, reg_vec) in self.ctg_reg.iter_mut().map(|(c, v)| (c.as_ref(), v)) {
+            for reg in reg_vec.iter_mut() {
+                if reg.end.is_none() {
+                    reg.end = Some(*shash.get(ctg).unwrap())
+                }
+            }
+        }
     }
 }
 
