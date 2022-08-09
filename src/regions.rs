@@ -1,3 +1,4 @@
+use std::collections::btree_map::{Iter, Values};
 use std::{
     cmp::{Ord, Ordering},
     collections::{btree_map, BTreeMap, HashMap},
@@ -67,7 +68,6 @@ fn parse_region_str(s: &str) -> Option<(&str, usize, Option<usize>)> {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Region {
-    contig: Rc<str>,
     start: usize,
     end: Option<usize>,
     mappability: Option<Vec<[usize; 2]>>,
@@ -75,15 +75,12 @@ pub struct Region {
 
 impl Ord for Region {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.contig.cmp(&other.contig) {
-            Ordering::Equal => match self.start.cmp(&other.start) {
-                Ordering::Equal => match (self.end.as_ref(), other.end.as_ref()) {
-                    (Some(x), Some(y)) => x.cmp(y),
-                    (Some(_), None) => Ordering::Less,
-                    (None, Some(_)) => Ordering::Greater,
-                    _ => Ordering::Equal,
-                },
-                x => x,
+        match self.start.cmp(&other.start) {
+            Ordering::Equal => match (self.end.as_ref(), other.end.as_ref()) {
+                (Some(x), Some(y)) => x.cmp(y),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                _ => Ordering::Equal,
             },
             x => x,
         }
@@ -96,28 +93,16 @@ impl PartialOrd for Region {
     }
 }
 
-fn write_ctg(f: &mut fmt::Formatter, s: &str) -> fmt::Result {
-    if f.alternate() && s.contains(':') {
-        write!(f, "{{{}}}", s)
-    } else {
-        write!(f, "{}", s)
-    }
-}
-
 impl fmt::Display for Region {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (self.start, self.end) {
-            (0, None) => write_ctg(f, self.contig.as_ref()),
             (0, Some(y)) => {
-                write_ctg(f, self.contig.as_ref())?;
                 write!(f, ":-{}", y)
             }
             (x, None) => {
-                write_ctg(f, self.contig.as_ref())?;
                 write!(f, ":{}-", x)
             }
             (x, Some(y)) => {
-                write_ctg(f, self.contig.as_ref())?;
                 write!(f, ":{}-{}", x, y)
             }
         }
@@ -125,43 +110,51 @@ impl fmt::Display for Region {
 }
 
 impl Region {
-    pub fn contig(&self) -> &str {
-        self.contig.as_ref()
-    }
-
     // Assume that self <= other
     fn check_overlap(mut self, other: Self) -> ChkRegOverlap {
         if self > other {
             return other.check_overlap(self);
         }
-        if self.contig != other.contig {
-            ChkRegOverlap::No(self, other)
-        } else {
-            match (self.end.as_ref(), other.end.as_ref()) {
-                (Some(x), Some(y)) => {
-                    if other.start <= x + 1 {
-                        self.end = Some(*x.max(y));
-                        ChkRegOverlap::Yes(self)
-                    } else {
-                        ChkRegOverlap::No(self, other)
-                    }
+        match (self.end.as_ref(), other.end.as_ref()) {
+            (Some(x), Some(y)) => {
+                if other.start <= x + 1 {
+                    self.end = Some(*x.max(y));
+                    ChkRegOverlap::Yes(self)
+                } else {
+                    ChkRegOverlap::No(self, other)
                 }
-                (Some(x), None) => {
-                    if other.start <= x + 1 {
-                        self.end = None;
-                        ChkRegOverlap::Yes(self)
-                    } else {
-                        ChkRegOverlap::No(self, other)
-                    }
-                }
-                (None, Some(_)) => ChkRegOverlap::Yes(self),
-                (None, None) => ChkRegOverlap::Yes(self),
             }
+            (Some(x), None) => {
+                if other.start <= x + 1 {
+                    self.end = None;
+                    ChkRegOverlap::Yes(self)
+                } else {
+                    ChkRegOverlap::No(self, other)
+                }
+            }
+            (None, Some(_)) => ChkRegOverlap::Yes(self),
+            (None, None) => ChkRegOverlap::Yes(self),
         }
     }
 
     pub fn mappability(&self) -> Option<&Vec<[usize; 2]>> {
         self.mappability.as_ref()
+    }
+
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    pub fn end(&self) -> Option<usize> {
+        self.end
+    }
+
+    pub fn new(start: usize, end: Option<usize>, mappability: Option<Vec<[usize; 2]>>) -> Self {
+        Self {
+            start,
+            end,
+            mappability,
+        }
     }
 }
 
@@ -208,7 +201,6 @@ impl Regions {
         }
         let contig = self.add_contig(ctg);
         let region = Region {
-            contig,
             start,
             end,
             mappability: None,
@@ -310,7 +302,6 @@ impl Regions {
                         let remainder = end - x;
                         let s = remainder / ns;
                         let reg1 = Region {
-                            contig: Rc::clone(ctg),
                             start: x,
                             end: Some(x + s),
                             mappability: None,
@@ -335,15 +326,20 @@ impl Regions {
                 let mut nv = Vec::new();
                 let mut ix = 0;
                 for mut reg in v.drain(..) {
-                    trace!("Looking for mappable regions in {}", reg);
-                    for mreg in mapv[ix..].iter() {
-                        if mreg[1] >= reg.start || reg.end.map(|x| mreg[0] > x).unwrap_or(false) {
-                            break;
+                    if ix < mapv.len() {
+                        trace!("Looking for mappable regions in {}", reg);
+                        for mreg in mapv[ix..].iter() {
+                            if mreg[1] >= reg.start || reg.end.map(|x| mreg[0] > x).unwrap_or(false)
+                            {
+                                break;
+                            }
+                            ix += 1;
                         }
-                        ix += 1;
                     }
                     if ix >= mapv.len() {
-                        break;
+                        reg.mappability = Some(Vec::new());
+                        nv.push(reg);
+                        continue;
                     }
                     let mut map_reg: Vec<[usize; 2]> = Vec::new();
                     for mreg in mapv[ix..].iter() {
@@ -352,12 +348,12 @@ impl Regions {
                             let i = map_reg.len();
                             if i > 1 && mreg[0] - map_reg[i - 1][1] > max_gap {
                                 let reg1 = Region {
-                                    contig: Rc::clone(ctg),
-                                    start: reg.start.max(map_reg[0][0]),
+                                    start: reg.start,
                                     end: Some(map_reg[i - 1][1]),
                                     mappability: Some(map_reg),
                                 };
                                 trace!("(A) Adding region {}.  Subregions: {}", reg1, i);
+                                reg.start = reg1.end.unwrap() + 1;
                                 nv.push(reg1);
                                 map_reg = Vec::new();
                             }
@@ -366,10 +362,7 @@ impl Regions {
                             break;
                         }
                     }
-                    let i = map_reg.len();
-                    if i > 0 {
-                        reg.start = reg.start.max(map_reg[0][0]);
-                        reg.end = reg.end.map(|x| x.min(map_reg[i - 1][1]));
+                    if reg.end.map(|x| reg.start < x).unwrap_or(true) {
                         trace!("(B) Adding region {}.  Subregions: {}", reg, map_reg.len());
                         reg.mappability = Some(map_reg);
                         nv.push(reg);
@@ -379,15 +372,27 @@ impl Regions {
                     trace!("Inserting regions ({}) for {}", nv.len(), ctg);
                     ncreg.insert(Rc::clone(ctg), nv);
                 }
+            } else {
+                let nv: Vec<_> = v
+                    .drain(..)
+                    .map(|mut r| {
+                        r.mappability = Some(Vec::new());
+                        r
+                    })
+                    .collect();
+                trace!("Inserting regions ({}) for {}", nv.len(), ctg);
+                ncreg.insert(Rc::clone(ctg), nv);
             }
         }
         self.ctg_reg = ncreg;
     }
 
-    pub fn iter(&self) -> RegionIter {
-        let mut reg_vec = self.ctg_reg.values();
-        let regs = reg_vec.next().map(|v| v.iter());
-        RegionIter { reg_vec, regs }
+    pub fn iter(&self) -> Iter<'_, Rc<str>, Vec<Region>> {
+        self.ctg_reg.iter()
+    }
+
+    pub fn values(&self) -> Values<'_, Rc<str>, Vec<Region>> {
+        self.ctg_reg.values()
     }
 
     pub fn len(&self) -> usize {
@@ -400,29 +405,6 @@ impl Regions {
             for reg in reg_vec.iter_mut() {
                 if reg.end.is_none() {
                     reg.end = Some(*shash.get(ctg).unwrap())
-                }
-            }
-        }
-    }
-}
-
-pub struct RegionIter<'a> {
-    reg_vec: btree_map::Values<'a, Rc<str>, Vec<Region>>,
-    regs: Option<slice::Iter<'a, Region>>,
-}
-
-impl<'a> Iterator for RegionIter<'a> {
-    type Item = &'a Region;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.regs.is_none() {
-            None
-        } else {
-            match self.regs.as_mut().and_then(|v| v.next()) {
-                Some(x) => Some(x),
-                None => {
-                    self.regs = self.reg_vec.next().map(|v| v.iter());
-                    self.next()
                 }
             }
         }

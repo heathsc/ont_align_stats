@@ -5,7 +5,7 @@ use r_htslib::*;
 
 use crate::{
     config::Config,
-    input,
+    input, regions,
     stats::{StatType, Stats},
 };
 
@@ -243,7 +243,7 @@ pub fn reader(
     ix: usize,
     in_file: &Path,
     tx: Sender<Stats>,
-    rx: Receiver<(String, Option<&Vec<[usize; 2]>>)>,
+    rx: Receiver<(String, usize, &Vec<regions::Region>)>,
 ) {
     debug!("Starting reader thread {}", ix);
 
@@ -261,11 +261,13 @@ pub fn reader(
     let mut rec = BamRec::new().expect("Could not allocate new Bam Record");
     let mut st = Stats::new();
     let mut pair_warning = false;
-    while let Ok((reg, mappability)) = rx.recv() {
+    while let Ok((reg, ix, rvec)) = rx.recv() {
+        let mappability = rvec[ix].mappability();
         let rlist = hts.make_region_list(&[&reg]);
         assert_eq!(rlist.len(), 1);
         let begin = rlist[0].begin() as usize;
-        let reg_len = rlist[0].end() as usize + 1 - begin;
+        let end = rlist[0].end() as usize;
+        let reg_len = end + 1 - begin;
         assert!(reg_len > 0);
         debug!(
             "Reader {} received {} {} - {} len {}",
@@ -279,19 +281,21 @@ pub fn reader(
         cov.reserve(reg_len as usize);
 
         if let Some(m) = mappability {
-            let mut x = begin;
-            for mv in m.iter() {
-                assert!(mv[0] >= x);
-                for _ in x..mv[0] {
+            if !m.is_empty() {
+                let mut x = begin;
+                for mv in m.iter() {
+                    assert!(mv[0] >= x);
+                    for _ in x..mv[0] {
+                        cov.push(None)
+                    }
+                    for _ in mv[0]..=mv[1] {
+                        cov.push(Some(0))
+                    }
+                    x = mv[1] + 1;
+                }
+                for _ in x..=rlist[0].end() as usize {
                     cov.push(None)
                 }
-                for _ in mv[0]..=mv[1] {
-                    cov.push(Some(0))
-                }
-                x = mv[1] + 1;
-            }
-            for _ in x..=rlist[0].end() as usize {
-                cov.push(None)
             }
         } else {
             for _ in 0..reg_len {
@@ -301,24 +305,41 @@ pub fn reader(
 
         let mut rdr: HtsItrReader<BamRec> = hts.itr_reader(&rlist);
         while rdr.read(&mut rec).expect("Error reading from input file") {
-            //            rec.format(rdr.header().unwrap(), &mut s)?;
-            // println!("Reader {} Read {}", ix, rec.qname().expect("No query"));
             st.incr(StatType::Mappings);
             let flag = rec.flag();
             let chk_flg = |fg| (flag & fg) != 0;
-            if chk_flg(BAM_FPAIRED) {
-                if !pair_warning {
-                    warn!("Paired reads founds");
-                    pair_warning = true;
-                }
-                st.incr(StatType::Paired)
-            }
-            if !chk_flg(BAM_FSUPPLEMENTARY) {
-                st.incr(StatType::Reads)
-            }
             if chk_flg(BAM_FMUNMAP) {
                 st.incr(StatType::Unmapped)
             } else {
+                // Check if mapping could appear in another region
+                let x = rec.pos().expect("Missing position for mapped read");
+                let y = rec.endpos();
+                // If mapping lies entirely within region then it can not appear in another region (as regions do not overlap)
+                // If not then we check to see if this is the first region the mapping would appear in otherwise we skip
+                if x < begin || y > end {
+                    if let Err(i) = rvec.binary_search_by_key(&x, |r| r.start()) {
+                        let j = if i > 0 {
+                            // Check if the read overlaps previous region
+                            if rvec[i - 1].end().map(|end| end >= x).unwrap_or(false) {
+                                i - 1
+                            } else {
+                                i
+                            }
+                        } else {
+                            i
+                        };
+                        assert!(j <= ix);
+                        if j != ix {
+                            continue;
+                        }
+                    }
+                }
+                if chk_flg(BAM_FPAIRED) {
+                    warn!("Paired reads founds");
+                    pair_warning = true;
+                    st.incr(StatType::Paired)
+                }
+
                 st.incr(StatType::Mapped);
                 let seq_qual = rec
                     .get_seq_qual()
@@ -329,16 +350,22 @@ pub fn reader(
                 }
                 if chk_flg(BAM_FSECONDARY) {
                     st.incr(StatType::Secondary)
-                } else if chk_flg(BAM_FDUP) {
-                    st.incr(StatType::Duplicate)
-                } else if chk_flg(BAM_FQCFAIL) {
-                    st.incr(StatType::QcFail)
                 } else {
                     if !chk_flg(BAM_FSUPPLEMENTARY) {
-                        process_primary_read(&mut rec, &mut st, read_len);
+                        //                       println!("{}\t{}\t{}", rec.qname().unwrap(), ix, flag);
+                        st.incr(StatType::Reads)
                     }
-                    if rec.qual() >= min_mapq {
-                        process_coverage(&mut rec, &seq_qual, &mut cov, begin, min_qual)
+                    if chk_flg(BAM_FDUP) {
+                        st.incr(StatType::Duplicate)
+                    } else if chk_flg(BAM_FQCFAIL) {
+                        st.incr(StatType::QcFail)
+                    } else {
+                        if !chk_flg(BAM_FSUPPLEMENTARY) {
+                            process_primary_read(&mut rec, &mut st, read_len);
+                        }
+                        if !cov.is_empty() && rec.qual() >= min_mapq {
+                            process_coverage(&mut rec, &seq_qual, &mut cov, begin, min_qual)
+                        }
                     }
                 }
             }

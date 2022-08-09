@@ -42,11 +42,18 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
         drop(collector_tx);
 
         // Send regions to readers
-        for reg in regions.iter() {
-            let s = format!("{}", reg);
-            region_tx
-                .send((s, reg.mappability()))
-                .expect("Error sending region message");
+        for (ctg, regv) in regions.iter() {
+            let ctg_str = if ctg.contains(':') {
+                format!("{{{}}}", ctg)
+            } else {
+                format!("{}", ctg)
+            };
+            for (ix, reg) in regv.iter().enumerate() {
+                let s = format!("{}{}", ctg_str, reg);
+                region_tx
+                    .send((s, ix, regv))
+                    .expect("Error sending region message");
+            }
         }
         drop(region_tx);
 
