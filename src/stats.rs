@@ -62,6 +62,10 @@ impl Stats {
         self.counts[ty as usize] += 1
     }
 
+    pub fn incr_n(&mut self, ty: StatType, n: usize) {
+        self.counts[ty as usize] += n
+    }
+
     pub fn incr_mapq(&mut self, q: u8) {
         self.primary_mapq[q as usize] += 1
     }

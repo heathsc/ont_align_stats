@@ -41,6 +41,11 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             .collect();
         drop(collector_tx);
 
+        // Send unmapped reads to readers
+        region_tx
+            .send((String::from('*'), 0, None))
+            .expect("Error sending region message");
+
         // Send regions to readers
         for (ctg, regv) in regions.iter() {
             let ctg_str = if ctg.contains(':') {
@@ -51,7 +56,7 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             for (ix, reg) in regv.iter().enumerate() {
                 let s = format!("{}{}", ctg_str, reg);
                 region_tx
-                    .send((s, ix, regv))
+                    .send((s, ix, Some(regv)))
                     .expect("Error sending region message");
             }
         }

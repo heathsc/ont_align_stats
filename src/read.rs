@@ -183,12 +183,6 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
                 used,
                 (used as f64) * 100.0 / (read_len as f64)
             );
-            if used > read_len {
-                for (a, b) in v.iter() {
-                    println!(" -> {} {}", a, b);
-                }
-                panic!("{} {} {} {}", read_len, used, reverse, n_splits)
-            }
             st.update_readlen_stats(read_len, used);
             st.incr_n_splits(n_splits);
         } else {
@@ -243,7 +237,7 @@ pub fn reader(
     ix: usize,
     in_file: &Path,
     tx: Sender<Stats>,
-    rx: Receiver<(String, usize, &Vec<regions::Region>)>,
+    rx: Receiver<(String, usize, Option<&Vec<regions::Region>>)>,
 ) {
     debug!("Starting reader thread {}", ix);
 
@@ -262,9 +256,9 @@ pub fn reader(
     let mut st = Stats::new();
     let mut pair_warning = false;
     while let Ok((reg, ix, rvec)) = rx.recv() {
-        let mappability = rvec[ix].mappability();
+        let mappability = rvec.map(|v| v[ix].mappability()).flatten();
         let rlist = hts.make_region_list(&[&reg]);
-        assert_eq!(rlist.len(), 1);
+        assert_eq!(rlist.len(), 1, "Empty region list for {}", reg);
         let begin = rlist[0].begin() as usize;
         let end = rlist[0].end() as usize;
         let reg_len = end + 1 - begin;
@@ -308,9 +302,17 @@ pub fn reader(
             st.incr(StatType::Mappings);
             let flag = rec.flag();
             let chk_flg = |fg| (flag & fg) != 0;
-            if chk_flg(BAM_FMUNMAP) {
-                st.incr(StatType::Unmapped)
+
+            let seq_qual = rec
+                .get_seq_qual()
+                .expect("Error getting sequence and qualities");
+            let read_len = seq_qual.len();
+
+            if chk_flg(BAM_FUNMAP) {
+                st.incr(StatType::Unmapped);
+                st.incr_n(StatType::TotalBases, read_len);
             } else {
+                let rvec = rvec.expect("Empty region vec for mapped region");
                 // Check if mapping could appear in another region
                 let x = rec.pos().expect("Missing position for mapped read");
                 let y = rec.endpos();
@@ -339,12 +341,8 @@ pub fn reader(
                     pair_warning = true;
                     st.incr(StatType::Paired)
                 }
-
                 st.incr(StatType::Mapped);
-                let seq_qual = rec
-                    .get_seq_qual()
-                    .expect("Error getting sequence and qualities");
-                let read_len = seq_qual.len();
+
                 if chk_flg(BAM_FREVERSE) {
                     st.incr(StatType::Reversed)
                 }
@@ -352,7 +350,6 @@ pub fn reader(
                     st.incr(StatType::Secondary)
                 } else {
                     if !chk_flg(BAM_FSUPPLEMENTARY) {
-                        //                       println!("{}\t{}\t{}", rec.qname().unwrap(), ix, flag);
                         st.incr(StatType::Reads)
                     }
                     if chk_flg(BAM_FDUP) {
