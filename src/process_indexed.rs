@@ -1,11 +1,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    thread,
 };
 
 use anyhow::{Context, Error};
 use crossbeam_channel::bounded;
-use crossbeam_utils::thread;
 
 use crate::{collect, config::Config, input, read, regions::Regions};
 
@@ -30,13 +30,13 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
     thread::scope(|scope| {
         // Spawn threads
         let (collector_tx, collector_rx) = bounded(n_tasks * 4);
-        let collector_task = scope.spawn(move |_| collect::collector(cfg_ref, collector_rx));
+        let collector_task = scope.spawn(|| collect::collector(cfg_ref, collector_rx));
         let (region_tx, region_rx) = bounded(n_tasks * 4);
         let mut tasks: Vec<_> = (0..n_tasks)
             .map(|ix| {
                 let rx = region_rx.clone();
                 let tx = collector_tx.clone();
-                scope.spawn(move |_| read::reader(cfg_ref, ix, ifile, tx, rx))
+                scope.spawn(move || read::reader(cfg_ref, ix, ifile, tx, rx))
             })
             .collect();
         drop(collector_tx);
@@ -68,7 +68,6 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
         }
         // Wait for collector to finish
         let _ = collector_task.join();
-    })
-    .expect("Error creating thread scope");
+    });
     Ok(())
 }

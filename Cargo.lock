@@ -22,9 +22,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.60"
+version = "1.0.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c794e162a5eff65c72ef524dfe393eb923c354e350bb78b9c7383df13f3bc142"
+checksum = "1485d4d2cc45e7b201ee3767015c96faa5904387c9d87c6efdd0fb511f12d305"
 
 [[package]]
 name = "atty"
@@ -51,9 +51,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bumpalo"
-version = "3.10.0"
+version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37ccbd214614c6783386c1af30caf03192f17891059cecc394b4fb119e363de3"
+checksum = "c1ad822118d20d2c234f427000d5acc36eabe1e29a348c89b63dd60b13f28e5d"
 
 [[package]]
 name = "c2rust-bitfields"
@@ -83,9 +83,9 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "chrono"
-version = "0.4.21"
+version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f725f340c3854e3cb3ab736dc21f0cca183303acea3b3ffec30f141503ac8eb"
+checksum = "bfd4d1b31faaa3a89d7934dbded3111da0d2ef28e3ebccdb4f0179f5929d1ef1"
 dependencies = [
  "iana-time-zone",
  "js-sys",
@@ -98,9 +98,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.16"
+version = "3.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3dbbb6653e7c55cc8595ad3e1f7be8f32aba4eb7ff7f0fd1163d4f3d137c0a9"
+checksum = "29e724a68d9319343bb3328c9cc2dfde263f4b3142ee1059a9980580171c954b"
 dependencies = [
  "atty",
  "bitflags",
@@ -132,16 +132,6 @@ dependencies = [
  "num_cpus",
  "os_pipe",
  "tempfile",
-]
-
-[[package]]
-name = "core-foundation"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "194a7a9e6de53fa55116934067c844d9d749312f75c6f6d0980e8c252f8c2146"
-dependencies = [
- "core-foundation-sys",
- "libc",
 ]
 
 [[package]]
@@ -196,12 +186,12 @@ dependencies = [
 
 [[package]]
 name = "iana-time-zone"
-version = "0.1.41"
+version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1779539f58004e5dba1c1f093d44325ebeb244bfc04b791acdc0aaeca9c04570"
+checksum = "ad2bfd338099682614d3ee3fe0cd72e0b6a41ca6a87f6a74a3bd593c91650501"
 dependencies = [
  "android_system_properties",
- "core-foundation",
+ "core-foundation-sys",
  "js-sys",
  "wasm-bindgen",
  "winapi",
@@ -243,9 +233,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.127"
+version = "0.2.132"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "505e71a4706fa491e9b1b55f51b95d4037d0821ee40131190475f692b35b009b"
+checksum = "8371e4e5341c3a96db127eb2465ac681ced4c433e01dd0e938adbef26ba93ba5"
 
 [[package]]
 name = "log"
@@ -293,19 +283,18 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18a6dbe30758c9f83eb00cbea4ac95966305f5a7772f3f42ebfc7fc7eddbd8e1"
+checksum = "074864da206b4973b84eb91683020dbefd6a8c3f0f38e054d93954e891935e4e"
 
 [[package]]
 name = "ont_align_stats"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "clap",
  "compress_io",
  "crossbeam-channel",
- "crossbeam-utils",
  "lazy_static",
  "libc",
  "log",
@@ -326,9 +315,9 @@ dependencies = [
 
 [[package]]
 name = "os_str_bytes"
-version = "6.2.0"
+version = "6.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "648001efe5d5c0102d8cea768e348da85d90af8ba91f0bea908f157951493cd4"
+checksum = "9ff7415e9ae3fff1225851df9e0d9e4e5479f947619774677a63572e55e80eff"
 
 [[package]]
 name = "proc-macro2"
