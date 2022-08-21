@@ -116,6 +116,96 @@ impl<'a> Iterator for SaTagIter<'a> {
     }
 }
 
+#[derive(Default)]
+struct Coverage {
+    start: usize,         // Start of region
+    cov: Vec<u32>,        // Coverage
+    map: Option<Vec<u8>>, // Mappability bit map
+}
+
+impl Coverage {
+    fn _calc_lens(start: usize, end: usize) -> (usize, usize) {
+        assert!(end >= start);
+        let l = end + 1 - start;
+        (l, (l + 7) >> 3)
+    }
+
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn reset(&mut self, start: usize, end: usize, mappability: Option<&Vec<[usize; 2]>>) {
+        let (len, mlen) = Self::_calc_lens(start, end);
+        self.start = start;
+        self.cov.clear();
+        self.cov.resize(len, 0);
+        if let Some(map) = mappability {
+            let m = if let Some(m) = self.map.as_mut() {
+                m.clear();
+                m.resize(mlen, 0);
+                m
+            } else {
+                self.map = Some(vec![0; mlen]);
+                self.map.as_mut().unwrap()
+            };
+            for mv in map.iter() {
+                assert!(mv[0] >= start);
+                for x in (mv[0]..=mv[1]).map(|i| i - start) {
+                    let ix = x >> 3;
+                    let iy = x & 7;
+                    m[ix] |= (1 << iy);
+                }
+            }
+        } else {
+            self.map = None
+        }
+    }
+
+    fn inc(&mut self, x: usize) {
+        if x >= self.start {
+            let i = x - self.start;
+            if let Some(c) = self.cov.get_mut(i) {
+                if let Some(m) = self.map.as_mut() {
+                    let ix = i >> 3;
+                    let iy = i & 7;
+                    if (m[ix] & (1 << iy)) != 0 {
+                        *c += 1
+                    }
+                } else {
+                    *c += 1
+                }
+            }
+        }
+    }
+
+    fn update_stats(&self, st: &mut Stats) {
+        if let Some(map) = self.map.as_ref() {
+            let mut it = self.cov.iter();
+            for mut m in map.iter().copied() {
+                let mut n = 8;
+                while m != 0 {
+                    if let Some(c) = it.next().map(|x| *x as usize) {
+                        if (m & 1) == 1 {
+                            st.incr_coverage(c)
+                        }
+                        m >>= 1;
+                        n -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                if n > 0 {
+                    it.nth(n - 1);
+                }
+            }
+        } else {
+            for c in self.cov.iter().map(|x| *x as usize) {
+                st.incr_coverage(c)
+            }
+        }
+    }
+}
+
 fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     st.incr_mapq(rec.qual());
     if let Some(cigar) = rec.cigar() {
@@ -191,33 +281,21 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     }
 }
 
-fn process_coverage(
-    rec: &mut BamRec,
-    seq_qual: &SeqQual,
-    cov: &mut [Option<usize>],
-    begin: usize,
-    min_qual: u8,
-) {
+fn process_coverage(rec: &mut BamRec, seq_qual: &SeqQual, cov: &mut Coverage, min_qual: u8) {
     if let Some(cigar) = rec.cigar() {
         let mut x = rec.pos().expect("No start position for mapped read");
-        let cov_len = cov.len();
         let mut sq = seq_qual.iter().map(|x| (*x & 3, *x >> 2));
         for elem in cigar.iter() {
             let l = elem.op_len() as usize;
             assert!(l > 0, "Zero length cigar element");
             match elem.op() {
                 CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
-                    for k in 0..l {
-                        let (c, q) = sq
+                    for _ in 0..l {
+                        let (_, q) = sq
                             .next()
                             .expect("Mismatch between Cigar and sequence length");
-                        if q >= min_qual && x >= begin {
-                            if x - begin >= cov_len {
-                                break;
-                            }
-                            if let Some(tp) = cov[x - begin].as_mut() {
-                                *tp += 1
-                            }
+                        if q >= min_qual {
+                            cov.inc(x)
                         }
                         x += 1;
                     }
@@ -251,12 +329,12 @@ pub fn reader(
     let min_qual = cfg.min_qual().min(255) as u8;
     let min_mapq = cfg.min_mapq().min(255) as u8;
 
-    let mut cov = Vec::new();
+    let mut cov = Coverage::new();
     let mut rec = BamRec::new().expect("Could not allocate new Bam Record");
     let mut st = Stats::new();
     let mut pair_warning = false;
-    while let Ok((reg, ix, rvec)) = rx.recv() {
-        let mappability = rvec.map(|v| v[ix].mappability()).flatten();
+    while let Ok((reg, reg_ix, rvec)) = rx.recv() {
+        let mappability = rvec.map(|v| v[reg_ix].mappability()).flatten();
         let rlist = hts.make_region_list(&[&reg]);
         assert_eq!(rlist.len(), 1, "Empty region list for {}", reg);
         let begin = rlist[0].begin() as usize;
@@ -271,31 +349,7 @@ pub fn reader(
             rlist[0].end(),
             reg_len
         );
-        cov.clear();
-        cov.reserve(reg_len as usize);
-
-        if let Some(m) = mappability {
-            if !m.is_empty() {
-                let mut x = begin;
-                for mv in m.iter() {
-                    assert!(mv[0] >= x);
-                    for _ in x..mv[0] {
-                        cov.push(None)
-                    }
-                    for _ in mv[0]..=mv[1] {
-                        cov.push(Some(0))
-                    }
-                    x = mv[1] + 1;
-                }
-                for _ in x..=rlist[0].end() as usize {
-                    cov.push(None)
-                }
-            }
-        } else {
-            for _ in 0..reg_len {
-                cov.push(Some(0))
-            }
-        };
+        cov.reset(begin, end, mappability);
 
         let mut rdr: HtsItrReader<BamRec> = hts.itr_reader(&rlist);
         while rdr.read(&mut rec).expect("Error reading from input file") {
@@ -330,8 +384,8 @@ pub fn reader(
                         } else {
                             i
                         };
-                        assert!(j <= ix);
-                        if j != ix {
+                        assert!(j <= reg_ix);
+                        if j != reg_ix {
                             continue;
                         }
                     }
@@ -360,16 +414,14 @@ pub fn reader(
                         if !chk_flg(BAM_FSUPPLEMENTARY) {
                             process_primary_read(&mut rec, &mut st, read_len);
                         }
-                        if !cov.is_empty() && rec.qual() >= min_mapq {
-                            process_coverage(&mut rec, &seq_qual, &mut cov, begin, min_qual)
+                        if rec.qual() >= min_mapq {
+                            process_coverage(&mut rec, &seq_qual, &mut cov, min_qual)
                         }
                     }
                 }
             }
         }
-        for x in cov.iter().flatten() {
-            st.incr_coverage(*x)
-        }
+        cov.update_stats(&mut st);
         info!(
             "Reader {} read {} records {} reads from {}",
             ix,
