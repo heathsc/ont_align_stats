@@ -205,10 +205,10 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
         m.values_of("region").map(Regions::from_str_vec)
     }
     .unwrap_or_else(|| Regions::from_str_vec(&seq))?;
-    
+
     // Fill in end values if not present
     regions.fix_open_intervals(&seq, &lengths);
-    
+
     // Threads argument
     let n_tasks = usize::from(
         parse::<NonZeroUsize>(
@@ -218,23 +218,21 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
         .with_context(|| "Error parsing threads option")?,
     );
 
-    // If multithreading and file is indexed, split up regions into chunks of at most max_block_size
-    if indexed {
-        let max = parse::<usize>(
-            m.value_of("max_block_size")
-                .expect("Missing default max-block-size value"),
-        )
-        .with_context(|| "Error parsing max_block_size option")?;
-        let max_block_size = if max >= 1000 {
-            max
-        } else {
-            warn!("Requested max-block-size too low: setting to 1000");
-            1000
-        };
-        let len_hash: HashMap<&str, usize> =
-            seq.iter().copied().zip(lengths.iter().copied()).collect();
-        regions.split_regions(max_block_size, len_hash);
-    }
+    // If multithreading split up regions into chunks of at most max_block_size
+
+    let max = parse::<usize>(
+        m.value_of("max_block_size")
+            .expect("Missing default max-block-size value"),
+    )
+    .with_context(|| "Error parsing max_block_size option")?;
+    let max_block_size = if max >= 1000 {
+        max
+    } else {
+        warn!("Requested max-block-size too low: setting to 1000");
+        1000
+    };
+    let len_hash: HashMap<&str, usize> = seq.iter().copied().zip(lengths.iter().copied()).collect();
+    regions.split_regions(max_block_size, len_hash);
 
     // If mappability option set, add mappability data to regions
     let map = if let Some(s) = m.value_of("mappability") {

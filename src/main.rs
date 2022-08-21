@@ -8,17 +8,12 @@ mod collect;
 mod config;
 mod input;
 mod mappability;
-mod process_indexed;
-mod process_unindexed;
+mod process;
 mod read;
 mod regions;
 mod stats;
 
 fn main() -> anyhow::Result<()> {
     let (cfg, input, regions) = cli::handle_cli()?;
-    if cfg.indexed() {
-        process_indexed::process(cfg, input, regions)
-    } else {
-        process_unindexed::process(cfg)
-    }
+    process::process(cfg, input, regions)
 }

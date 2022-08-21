@@ -4,6 +4,7 @@ Utility for calculating mapping statistics for (mostly) ONT reads from indexed B
 
 ## Changes
 
+ - 0.3.5 Refactor in preparation for implementing non-indexed operation
  - 0.3.4 Use Coverage struct for temporary coverage statistics using almost 4 times less memory than the previous Option< usize > solution
  - 0.3.3 Update to using Rust 1.63.  Switch from crossbeam to std::thread for scoped threads
  - 0.3.2 Include unmapped reads in statistics.  Move to r_htslib 0.9.3. which allows recovering unmapped reads.

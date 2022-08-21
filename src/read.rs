@@ -86,7 +86,7 @@ impl<'a> Iterator for SaTagIter<'a> {
         if self.done {
             return None;
         }
-        let mut it = self.tag.char_indices();
+        let it = self.tag.char_indices();
         let mut ix = None;
         let mut ch = None;
         for (iy, c) in it {
@@ -153,7 +153,7 @@ impl Coverage {
                 for x in (mv[0]..=mv[1]).map(|i| i - start) {
                     let ix = x >> 3;
                     let iy = x & 7;
-                    m[ix] |= (1 << iy);
+                    m[ix] |= 1 << iy;
                 }
             }
         } else {
@@ -214,7 +214,7 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
         if let Some((start, stop)) = get_start_end(&cigar, reverse, read_len) {
             let mut v = vec![(start, stop)];
             // Look for supplementary mappings for this read
-            if let Some(Ok(sa)) = rec.get_tag("SA", 'Z').map(|x| std::str::from_utf8(x)) {
+            if let Some(Ok(sa)) = rec.get_tag("SA", 'Z').map(std::str::from_utf8) {
                 trace!("Found SA tag for read {}", rec.qname().unwrap());
                 // Collect the start and end points of all mappings for this read
                 for s in sa.split(';') {
@@ -334,7 +334,7 @@ pub fn reader(
     let mut st = Stats::new();
     let mut pair_warning = false;
     while let Ok((reg, reg_ix, rvec)) = rx.recv() {
-        let mappability = rvec.map(|v| v[reg_ix].mappability()).flatten();
+        let mappability = rvec.and_then(|v| v[reg_ix].mappability());
         let rlist = hts.make_region_list(&[&reg]);
         assert_eq!(rlist.len(), 1, "Empty region list for {}", reg);
         let begin = rlist[0].begin() as usize;
@@ -373,24 +373,32 @@ pub fn reader(
                 // If mapping lies entirely within region then it can not appear in another region (as regions do not overlap)
                 // If not then we check to see if this is the first region the mapping would appear in otherwise we skip
                 if x < begin || y > end {
-                    if let Err(i) = rvec.binary_search_by_key(&x, |r| r.start()) {
-                        let j = if i > 0 {
-                            // Check if the read overlaps previous region
-                            if rvec[i - 1].end().map(|end| end >= x).unwrap_or(false) {
-                                i - 1
+                    let v = regions::find_overlapping_regions(rvec, x, y);
+                    assert!(!v.is_empty());
+                    /*                   let i = match rvec.binary_search_by_key(&x, |r| r.start()) {
+                        Ok(i) => i,
+                        Err(i) => {
+                            if i > 0 {
+                                // Check if the read overlaps previous region
+                                if rvec[i - 1].end().map(|end| end >= x).unwrap_or(false) {
+                                    i - 1
+                                } else {
+                                    i
+                                }
                             } else {
                                 i
                             }
-                        } else {
-                            i
-                        };
-                        assert!(j <= reg_ix);
-                        if j != reg_ix {
-                            continue;
                         }
+                    };
+                    assert!(i <= reg_ix);
+                    if i != reg_ix {
+                        continue;
+                    } */
+                    if v[0] != reg_ix {
+                        continue;
                     }
                 }
-                if chk_flg(BAM_FPAIRED) {
+                if chk_flg(BAM_FPAIRED) && !pair_warning {
                     warn!("Paired reads founds");
                     pair_warning = true;
                     st.incr(StatType::Paired)
