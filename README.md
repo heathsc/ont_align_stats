@@ -4,6 +4,7 @@ Utility for calculating mapping statistics for (mostly) ONT reads from indexed B
 
 ## Changes
 
+ - 0.4.0 Non-indexed operation works (but is slower and uses much more memory than indexed operation)
  - 0.3.5 Refactor in preparation for implementing non-indexed operation
  - 0.3.4 Use Coverage struct for temporary coverage statistics using almost 4 times less memory than the previous Option< usize > solution
  - 0.3.3 Update to using Rust 1.63.  Switch from crossbeam to std::thread for scoped threads

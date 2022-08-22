@@ -16,6 +16,7 @@ pub struct Config {
     // Operation options
     n_tasks: usize,
     threads_per_task: usize,
+    bam_rec_thread_buffer: usize,
 
     // Is the file indexed?
     indexed: bool,
@@ -67,8 +68,14 @@ impl Config {
     pub fn set_n_tasks(&mut self, x: usize) {
         self.n_tasks = x
     }
+    pub fn set_bam_rec_thread_buffer(&mut self, x: usize) {
+        self.bam_rec_thread_buffer = x
+    }
     pub fn n_tasks(&self) -> usize {
         self.n_tasks
+    }
+    pub fn bam_rec_thread_buffer(&self) -> usize {
+        self.bam_rec_thread_buffer
     }
     pub fn set_mappability(&mut self, map: Option<Mappability>) {
         self.mappability = map

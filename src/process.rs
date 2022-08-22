@@ -1,13 +1,21 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    rc::Rc,
     thread,
 };
 
 use anyhow::Context;
-use crossbeam_channel::bounded;
+use crossbeam_channel::{bounded, unbounded};
+use r_htslib::tbx_conf_vcf;
 
-use crate::{collect, config::Config, read, regions::Regions};
+use crate::{
+    collect,
+    config::Config,
+    read,
+    regions::{Regions, TaskRegion},
+};
 
 pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<()> {
     // Create output dir if necessary
@@ -25,14 +33,15 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
     let cfg_ref = &cfg;
     let ifile: &Path = input.as_ref();
 
-    // Create thread scope so that we can share references across threads
-    thread::scope(|scope| {
-        if cfg.indexed() {
-            debug!("Processing input with index");
+    if cfg.indexed() {
+        debug!("Processing input with index");
 
-            // Spawn threads
+        // Create thread scope so that we can share references across threads
+        thread::scope(|scope| {
             let (collector_tx, collector_rx) = bounded(n_tasks * 4);
             let collector_task = scope.spawn(|| collect::collector(cfg_ref, collector_rx));
+
+            // Spawn threads
             let (region_tx, region_rx) = bounded(n_tasks * 4);
             let mut tasks: Vec<_> = (0..n_tasks)
                 .map(|ix| {
@@ -48,7 +57,7 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
                 .send((String::from('*'), 0, None))
                 .expect("Error sending region message");
 
-            // Send regions to readers
+            // Send mapped regions to readers
             for (ctg, regv) in regions.iter() {
                 let ctg_str = if ctg.contains(':') {
                     format!("{{{}}}", ctg)
@@ -70,11 +79,105 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             }
             // Wait for collector to finish
             let _ = collector_task.join();
-        } else {
-            debug!("Processing input without index");
+        });
+    } else {
+        debug!("Processing input without index");
 
-            // First we assign regions to each task
+        // First we assign regions to each task
+
+        // Get total length of all regions
+        let total_size: usize = regions
+            .values()
+            .map(|regv| {
+                regv.iter()
+                    .map(|r| r.length().expect("Open interval found"))
+                    .sum::<usize>()
+            })
+            .sum();
+        debug!("Total length of all regions: {}", total_size);
+
+        // Allocate regions to tasks
+        // Tasks are given contiguous sets of regions to decrease
+        // the chance that a read spans regions handled by different tasks
+        let mut region_hash = HashMap::new();
+        let mut remainder = total_size;
+        let mut task_ix = 0;
+        let mut current_total = 0;
+        let mut task_regions = Vec::with_capacity(n_tasks);
+        let mut task_region_list = Vec::new();
+        for (ctg, regv) in regions.iter() {
+            let mut v = Vec::with_capacity(regv.len());
+            let mut tv = Vec::new();
+            for (reg_ix, reg) in regv.iter().enumerate() {
+                let l = reg.length().unwrap();
+                let avail = n_tasks - task_ix;
+                if avail == 1 || current_total + l < remainder / avail {
+                    current_total += l;
+                    tv.push((reg, reg_ix))
+                } else {
+                    debug!("Task {}, total region length {}", task_ix, current_total);
+                    if !tv.is_empty() {
+                        let tr = TaskRegion::new(ctg.as_ref(), tv);
+                        task_region_list.push(tr);
+                        tv = Vec::new();
+                    }
+                    task_regions.push(task_region_list);
+                    task_region_list = Vec::new();
+                    task_ix += 1;
+                    remainder -= current_total;
+                    current_total = l;
+                    tv.push((reg, reg_ix));
+                }
+                v.push(task_ix)
+            }
+            region_hash.insert(Rc::clone(ctg), v);
+            if !tv.is_empty() {
+                let tr = TaskRegion::new(ctg.as_ref(), tv);
+                task_region_list.push(tr)
+            }
         }
-    });
+        task_regions.push(task_region_list);
+        debug!("Task {}, total region length {}", task_ix, current_total);
+
+        thread::scope(|scope| {
+            // Spawn handling tasks
+
+            let (collector_tx, collector_rx) = bounded(n_tasks * 4);
+            let collector_task = scope.spawn(|| collect::collector(cfg_ref, collector_rx));
+
+            let (bam_tx, bam_rx) = unbounded();
+            let mut task_tx = Vec::with_capacity(n_tasks);
+            let mut tasks: Vec<_> = task_regions
+                .iter()
+                .enumerate()
+                .map(|(ix, th)| {
+                    let (tx, rx) = unbounded();
+                    task_tx.push(tx);
+                    let collect_tx = collector_tx.clone();
+                    let b_tx = bam_tx.clone();
+                    scope.spawn(move || read::read_handler(cfg_ref, ix, th, collect_tx, rx, b_tx))
+                })
+                .collect();
+            drop(bam_tx);
+            // Read from input
+            read::read_input(
+                cfg_ref,
+                ifile,
+                &regions,
+                &task_regions,
+                task_tx,
+                bam_rx,
+                collector_tx,
+            )
+            .expect("Error opening input file");
+
+            // Wait for read handlers to finish
+            for jh in tasks.drain(..) {
+                let _ = jh.join();
+            }
+            // Wait for collector to finish
+            let _ = collector_task.join();
+        });
+    }
     Ok(())
 }

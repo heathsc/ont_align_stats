@@ -155,22 +155,23 @@ impl Region {
             mappability,
         }
     }
+
+    pub fn length(&self) -> Option<usize> {
+        self.end.map(|x| x + 1 - self.start)
+    }
 }
 
 #[derive(Default)]
 pub struct Regions {
     ctg_reg: BTreeMap<Rc<str>, Vec<Region>>,
+    ctg_vec: Vec<Option<Rc<str>>>,
 }
 
 impl Regions {
-    fn add_contig(&mut self, ctg: &str) -> Rc<str> {
-        if let Some((k, _)) = self.ctg_reg.get_key_value(ctg) {
-            Rc::clone(k)
-        } else {
+    fn add_contig(&mut self, ctg: &str) {
+        if !self.ctg_reg.contains_key(ctg) {
             let ctg = Rc::from(ctg);
-            let ctg1 = Rc::clone(&ctg);
-            self.ctg_reg.insert(ctg1, Vec::new());
-            ctg
+            self.ctg_reg.insert(ctg, Vec::new());
         }
     }
 
@@ -198,7 +199,7 @@ impl Regions {
                 ));
             }
         }
-        let _ = self.add_contig(ctg);
+        self.add_contig(ctg);
         let region = Region {
             start,
             end,
@@ -386,6 +387,19 @@ impl Regions {
         self.ctg_reg = ncreg;
     }
 
+    pub fn add_tid_info(&mut self, seq_names: &[&str]) {
+        let v: Vec<_> = seq_names
+            .iter()
+            .enumerate()
+            .map(|(tid, ctg)| {
+                self.ctg_reg
+                    .get_key_value(*ctg)
+                    .map(|(ctg, _)| Rc::clone(ctg))
+            })
+            .collect();
+        self.ctg_vec = v;
+    }
+
     pub fn iter(&self) -> Iter<'_, Rc<str>, Vec<Region>> {
         self.ctg_reg.iter()
     }
@@ -396,6 +410,14 @@ impl Regions {
 
     pub fn len(&self) -> usize {
         self.ctg_reg.values().map(|v| v.len()).sum()
+    }
+
+    pub fn ctg_regions(&self, ctg: &str) -> Option<&Vec<Region>> {
+        self.ctg_reg.get(ctg)
+    }
+
+    pub fn tid2ctg(&self, tid: usize) -> Option<&str> {
+        self.ctg_vec[tid].as_ref().map(|s| s.as_ref())
     }
 
     pub fn fix_open_intervals(&mut self, seq: &[&str], len: &[usize]) {
@@ -442,4 +464,24 @@ pub fn find_overlapping_regions(rvec: &[Region], x: usize, y: usize) -> Vec<usiz
     }
 
     v
+}
+
+// Copy of region information for a task
+pub struct TaskRegion<'a> {
+    ctg: &'a str,
+    regions: Vec<(&'a Region, usize)>, // usize parameter gives index into list of regions for this contig
+}
+
+impl<'a> TaskRegion<'a> {
+    pub fn new(ctg: &'a str, regions: Vec<(&'a Region, usize)>) -> Self {
+        Self { ctg, regions }
+    }
+
+    pub fn ctg(&self) -> &str {
+        self.ctg
+    }
+
+    pub fn regions(&self) -> &[(&Region, usize)] {
+        &self.regions
+    }
 }

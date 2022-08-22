@@ -165,6 +165,12 @@ fn cli_model() -> ArgMatches {
                 .default_value("100000")
         )
         .arg(
+            Arg::new("bam_rec_thread_buffer")
+                .long("bam-rec-thread-buffer").hidden(true)
+                .takes_value(true).value_name("INT")
+                .default_value("1024")
+        )
+        .arg(
             Arg::new("no_index")
                 .long("no-index").hidden(true)
         )
@@ -248,6 +254,8 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
         None
     };
 
+    regions.add_tid_info(&seq);
+
     let mut cfg = Config::default();
     cfg.set_indexed(indexed);
     cfg.set_n_tasks(n_tasks);
@@ -255,6 +263,7 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
     cfg.set_min_mapq(m.value_of_t("min_maxq").unwrap());
     cfg.set_min_qual(m.value_of_t("min_qual").unwrap());
     cfg.set_threads_per_task(m.value_of_t("threads_per_task").unwrap());
+    cfg.set_bam_rec_thread_buffer(m.value_of_t("bam_rec_thread_buffer").unwrap());
     if let Some(s) = reference {
         cfg.set_reference(s)
     }

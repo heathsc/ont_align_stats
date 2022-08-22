@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, ops::AddAssign};
 pub enum StatType {
     Mappings = 0,
     Reads,
-    Mapped,
     Unmapped,
     Reversed,
     Secondary,
@@ -16,7 +15,7 @@ pub enum StatType {
 
 #[derive(Default, Debug)]
 pub struct Stats {
-    counts: [usize; 11],
+    counts: [usize; 10],
     mapped_pctg: Vec<usize>,
     primary_mapq: Vec<usize>,
     read_len: BTreeMap<usize, usize>,

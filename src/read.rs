@@ -1,11 +1,15 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path, rc::Rc};
 
-use crossbeam_channel::{Receiver, Sender};
-use r_htslib::*;
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use r_htslib::{
+    BamRec, Cigar, CigarOp, HtsItrReader, HtsRead, SeqQual, BAM_FDUP, BAM_FPAIRED, BAM_FQCFAIL,
+    BAM_FREVERSE, BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FUNMAP,
+};
 
 use crate::{
     config::Config,
-    input, regions,
+    input,
+    regions::{self, Region, Regions, TaskRegion},
     stats::{StatType, Stats},
 };
 
@@ -310,22 +314,40 @@ fn process_coverage(rec: &mut BamRec, seq_qual: &SeqQual, cov: &mut Coverage, mi
     }
 }
 
+fn update_flag_stats(flag: u16, st: &mut Stats) {
+    let chk_flg = |fg| (flag & fg) != 0;
+    st.incr(StatType::Mappings);
+    if chk_flg(BAM_FREVERSE) {
+        st.incr(StatType::Reversed)
+    }
+    if chk_flg(BAM_FSECONDARY) {
+        st.incr(StatType::Secondary)
+    } else if !chk_flg(BAM_FSUPPLEMENTARY) {
+        st.incr(StatType::Reads);
+        if chk_flg(BAM_FPAIRED) {
+            st.incr(StatType::Paired)
+        }
+        if chk_flg(BAM_FDUP) {
+            st.incr(StatType::Duplicate)
+        }
+        if chk_flg(BAM_FQCFAIL) {
+            st.incr(StatType::QcFail)
+        }
+    }
+}
+
+// Read thread for indexed files
 pub fn reader(
     cfg: &Config,
     ix: usize,
     in_file: &Path,
     tx: Sender<Stats>,
-    rx: Receiver<(String, usize, Option<&Vec<regions::Region>>)>,
+    rx: Receiver<(String, usize, Option<&Vec<Region>>)>,
 ) {
     debug!("Starting reader thread {}", ix);
 
-    let mut hts = input::open_input(
-        in_file,
-        true,
-        cfg.reference(),
-        cfg.threads_per_task().min(4),
-    )
-    .expect("Error opening input file in thread");
+    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_task())
+        .expect("Error opening input file in thread");
     let min_qual = cfg.min_qual().min(255) as u8;
     let min_mapq = cfg.min_mapq().min(255) as u8;
 
@@ -353,7 +375,6 @@ pub fn reader(
 
         let mut rdr: HtsItrReader<BamRec> = hts.itr_reader(&rlist);
         while rdr.read(&mut rec).expect("Error reading from input file") {
-            st.incr(StatType::Mappings);
             let flag = rec.flag();
             let chk_flg = |fg| (flag & fg) != 0;
 
@@ -372,60 +393,29 @@ pub fn reader(
                 let y = rec.endpos();
                 // If mapping lies entirely within region then it can not appear in another region (as regions do not overlap)
                 // If not then we check to see if this is the first region the mapping would appear in otherwise we skip
-                if x < begin || y > end {
+                let primary_region = if x < begin || y > end {
                     let v = regions::find_overlapping_regions(rvec, x, y);
                     assert!(!v.is_empty());
-                    /*                   let i = match rvec.binary_search_by_key(&x, |r| r.start()) {
-                        Ok(i) => i,
-                        Err(i) => {
-                            if i > 0 {
-                                // Check if the read overlaps previous region
-                                if rvec[i - 1].end().map(|end| end >= x).unwrap_or(false) {
-                                    i - 1
-                                } else {
-                                    i
-                                }
-                            } else {
-                                i
-                            }
-                        }
-                    };
-                    assert!(i <= reg_ix);
-                    if i != reg_ix {
-                        continue;
-                    } */
-                    if v[0] != reg_ix {
-                        continue;
-                    }
-                }
-                if chk_flg(BAM_FPAIRED) && !pair_warning {
-                    warn!("Paired reads founds");
-                    pair_warning = true;
-                    st.incr(StatType::Paired)
-                }
-                st.incr(StatType::Mapped);
-
-                if chk_flg(BAM_FREVERSE) {
-                    st.incr(StatType::Reversed)
-                }
-                if chk_flg(BAM_FSECONDARY) {
-                    st.incr(StatType::Secondary)
+                    v[0] == reg_ix
                 } else {
-                    if !chk_flg(BAM_FSUPPLEMENTARY) {
-                        st.incr(StatType::Reads)
+                    true
+                };
+                if primary_region {
+                    if chk_flg(BAM_FPAIRED) && !pair_warning {
+                        warn!("Paired reads founds");
+                        pair_warning = true;
                     }
-                    if chk_flg(BAM_FDUP) {
-                        st.incr(StatType::Duplicate)
-                    } else if chk_flg(BAM_FQCFAIL) {
-                        st.incr(StatType::QcFail)
-                    } else {
-                        if !chk_flg(BAM_FSUPPLEMENTARY) {
-                            process_primary_read(&mut rec, &mut st, read_len);
-                        }
-                        if rec.qual() >= min_mapq {
-                            process_coverage(&mut rec, &seq_qual, &mut cov, min_qual)
-                        }
+                    update_flag_stats(flag, &mut st);
+                    if !chk_flg(
+                        BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP | BAM_FSUPPLEMENTARY,
+                    ) {
+                        process_primary_read(&mut rec, &mut st, read_len);
                     }
+                }
+                if rec.qual() >= min_mapq
+                    && !chk_flg(BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP)
+                {
+                    process_coverage(&mut rec, &seq_qual, &mut cov, min_qual)
                 }
             }
         }
@@ -440,4 +430,245 @@ pub fn reader(
     }
     tx.send(st).expect("Error sending Stats to collector");
     debug!("Terminating reader thread {}", ix);
+}
+
+pub struct ReadHandlerData {
+    rec: BamRec,
+    seq_qual: SeqQual,
+    reg_ix: usize, // Region index within task
+    primary_region: bool,
+    // Subsequent regions for this record
+    task_info: Option<Vec<(usize, Sender<ReadHandlerData>)>>, // region index within task, sender to task
+}
+
+// Read handler for non-indexed files
+pub fn read_handler(
+    cfg: &Config,
+    ix: usize,
+    region_list: &[TaskRegion],
+    tx: Sender<Stats>,
+    rx: Receiver<ReadHandlerData>,
+    bam_tx: Sender<Vec<BamRec>>,
+) {
+    debug!("Starting read handler thread {}", ix);
+
+    let buf_size = cfg.bam_rec_thread_buffer();
+    let mut brec_store = Vec::with_capacity(buf_size);
+    let min_mapq = cfg.min_mapq().min(255) as u8;
+    let min_qual = cfg.min_qual().min(255) as u8;
+    let mut st = Stats::new();
+    let mut cov_vec = Vec::new();
+    for tr in region_list.iter() {
+        for (reg, _) in tr.regions() {
+            let mut cov = Coverage::new();
+            cov.reset(reg.start(), reg.end().unwrap(), reg.mappability());
+            cov_vec.push(cov);
+        }
+    }
+
+    loop {
+        let mut rd = {
+            match rx.try_recv() {
+                Ok(rd) => rd,
+                Err(TryRecvError::Empty) => {
+                    if !brec_store.is_empty() {
+                        let _ = bam_tx.send(brec_store);
+                        brec_store = Vec::with_capacity(buf_size)
+                    }
+                    if let Ok(rd) = rx.recv() {
+                        rd
+                    } else {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        };
+        let ReadHandlerData {
+            mut rec,
+            seq_qual,
+            reg_ix,
+            primary_region,
+            mut task_info,
+        } = rd;
+        let flag = rec.flag();
+        let chk_flg = |fg| (flag & fg) != 0;
+        if primary_region && !chk_flg(BAM_FSUPPLEMENTARY) {
+            // Check primary read
+            process_primary_read(&mut rec, &mut st, seq_qual.len());
+        }
+        if rec.qual() >= min_mapq {
+            // Check coverage
+            process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual)
+        }
+        // Remove next region if exists
+        if let Some((reg_ix, tx, task_info)) = task_info.map(|mut v| {
+            let (ix, tx) = v.pop().unwrap();
+            if v.is_empty() {
+                (ix, tx, None)
+            } else {
+                (ix, tx, Some(v))
+            }
+        }) {
+            let rd = ReadHandlerData {
+                rec,
+                seq_qual,
+                reg_ix,
+                primary_region: false,
+                task_info,
+            };
+            tx.send(rd).expect("Error sending data to read handler")
+        } else {
+            brec_store.push(rec);
+            if brec_store.len() >= buf_size {
+                let _ = bam_tx.send(brec_store);
+                brec_store = Vec::with_capacity(buf_size)
+            }
+        }
+    }
+    debug!("Read handle thread {} - updating stats", ix);
+    if !brec_store.is_empty() {
+        let _ = bam_tx.send(brec_store);
+        brec_store = Vec::with_capacity(buf_size)
+    }
+    for cov in cov_vec {
+        cov.update_stats(&mut st)
+    }
+    tx.send(st).expect("Error sending Stats to collector");
+    debug!("Terminating read handler thread {}", ix);
+}
+
+// Read in BAM records from non-indexed file
+pub fn read_input(
+    cfg: &Config,
+    in_file: &Path,
+    regions: &Regions,
+    task_regions: &[Vec<TaskRegion>],
+    tx_vec: Vec<Sender<ReadHandlerData>>,
+    bam_rx: Receiver<Vec<BamRec>>,
+    stats_tx: Sender<Stats>,
+) -> anyhow::Result<()> {
+    let nreg = regions.len();
+    let n_tasks = cfg.n_tasks().min(nreg);
+    let mut st = Stats::new();
+    let n_brecs = n_tasks * 2 * cfg.bam_rec_thread_buffer();
+    let mut brec_buf = Vec::with_capacity(n_brecs);
+    for _ in 0..n_brecs {
+        brec_buf.push(BamRec::new()?)
+    }
+
+    // Make hashtable so we can go from (ctg, idx) to (task, task_region_idx)
+    let mut reg_task_hash = HashMap::new();
+    for (task_ix, tv) in task_regions.iter().enumerate() {
+        let mut tix: usize = 0;
+        for tr in tv.iter() {
+            for (_, reg_ix) in tr.regions() {
+                let tx = tx_vec[task_ix].clone();
+                reg_task_hash.insert((tr.ctg(), *reg_ix), (tix, tx));
+                tix += 1;
+            }
+        }
+    }
+
+    let mut pair_warning = true;
+    let min_mapq = cfg.min_mapq().min(255) as u8;
+
+    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_task())?;
+
+    loop {
+        // If we have no empty bam rec then we wait until one appears
+        if brec_buf.is_empty() {
+            let mut v = bam_rx.recv()?;
+            brec_buf.append(&mut v)
+        }
+
+        // Collect any other vectors of bam recs that are waiting
+        for mut v in bam_rx.try_iter() {
+            brec_buf.append(&mut v);
+        }
+        let mut rec = brec_buf.pop().unwrap();
+
+        // Get next read if it exists
+        if !rec.read(&mut hts)? {
+            break;
+        }
+
+        let flag = rec.flag();
+        let chk_flg = |fg| (flag & fg) != 0;
+
+        let seq_qual = rec
+            .get_seq_qual()
+            .expect("Error getting sequence and qualities");
+        let read_len = seq_qual.len();
+
+        if chk_flg(BAM_FUNMAP) {
+            st.incr(StatType::Unmapped);
+            st.incr_n(StatType::TotalBases, read_len);
+            brec_buf.push(rec);
+        } else if let Some(ctg) =
+            regions.tid2ctg(rec.tid().expect("Missing contig for mapped read"))
+        {
+            let rvec = regions.ctg_regions(ctg).expect("Unknown contig");
+            let x = rec.pos().expect("Missing position for mapped read");
+            let y = rec.endpos();
+            let regs = regions::find_overlapping_regions(rvec, x, y);
+            if regs.is_empty() {
+                // Read does not overlap requested areas
+                brec_buf.push(rec);
+            } else {
+                if chk_flg(BAM_FPAIRED) && !pair_warning {
+                    warn!("Paired reads founds");
+                    pair_warning = true;
+                }
+                update_flag_stats(flag, &mut st);
+                if !chk_flg(BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP) {
+                    let mut v: Vec<_> = regs
+                        .iter()
+                        .rev()
+                        .copied()
+                        .map(|i| {
+                            let (reg_ix, tx) =
+                                reg_task_hash.get(&(ctg, i)).expect("No task for region");
+                            (*reg_ix, tx.clone())
+                        })
+                        .collect();
+
+                    let (task_reg, tx) = v.pop().unwrap();
+
+                    let (task_info, sflag) = if rec.qual() >= min_mapq {
+                        // Need to process all regions
+                        if v.is_empty() {
+                            (None, true)
+                        } else {
+                            (Some(v), true)
+                        }
+                    } else if !chk_flg(BAM_FSUPPLEMENTARY) {
+                        // Only process the first region
+                        (None, true)
+                    } else {
+                        // Do not process
+                        (None, false)
+                    };
+                    if sflag {
+                        let rd = ReadHandlerData {
+                            rec,
+                            seq_qual,
+                            reg_ix: task_reg,
+                            primary_region: true,
+                            task_info,
+                        };
+                        tx.send(rd).expect("Error sending read to read handler");
+                    } else {
+                        brec_buf.push(rec)
+                    }
+                } else {
+                    brec_buf.push(rec)
+                }
+            }
+        } else {
+            brec_buf.push(rec);
+        }
+    }
+    stats_tx.send(st).expect("Error sending Stats to collector");
+    Ok(())
 }
