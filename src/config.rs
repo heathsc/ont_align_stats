@@ -1,4 +1,3 @@
-use crate::mappability::Mappability;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -20,9 +19,6 @@ pub struct Config {
 
     // Is the file indexed?
     indexed: bool,
-
-    // Mappability regions
-    mappability: Option<Mappability>,
 
     // Reference path
     reference: Option<PathBuf>,
@@ -76,12 +72,6 @@ impl Config {
     }
     pub fn bam_rec_thread_buffer(&self) -> usize {
         self.bam_rec_thread_buffer
-    }
-    pub fn set_mappability(&mut self, map: Option<Mappability>) {
-        self.mappability = map
-    }
-    pub fn mappability(&self) -> Option<&Mappability> {
-        self.mappability.as_ref()
     }
     pub fn set_indexed(&mut self, x: bool) {
         self.indexed = x

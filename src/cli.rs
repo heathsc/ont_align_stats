@@ -129,7 +129,7 @@ fn cli_model() -> ArgMatches {
             Arg::new("prefix")
                 .short('P').long("prefix")
                 .takes_value(true).value_name("STRING")
-                .default_value("bedmethyl")
+                .default_value("ont_align_stats")
                 .help("Set prefix for output files")
         )
         .arg(
@@ -241,7 +241,7 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
     regions.split_regions(max_block_size, len_hash);
 
     // If mappability option set, add mappability data to regions
-    let map = if let Some(s) = m.value_of("mappability") {
+    if let Some(s) = m.value_of("mappability") {
         let mp = Mappability::from_file(s)?;
         let max_gap = parse::<usize>(
             m.value_of("max_gap")
@@ -249,17 +249,13 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
         )
         .with_context(|| "Error parsing max_gap option")?;
         regions.add_mappability(&mp, max_gap);
-        Some(mp)
-    } else {
-        None
-    };
+    }
 
     regions.add_tid_info(&seq);
 
     let mut cfg = Config::default();
     cfg.set_indexed(indexed);
     cfg.set_n_tasks(n_tasks);
-    cfg.set_mappability(map);
     cfg.set_min_mapq(m.value_of_t("min_maxq").unwrap());
     cfg.set_min_qual(m.value_of_t("min_qual").unwrap());
     cfg.set_threads_per_task(m.value_of_t("threads_per_task").unwrap());

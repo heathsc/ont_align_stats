@@ -1,5 +1,11 @@
 use std::{collections::BTreeMap, ops::AddAssign};
 
+use serde::{
+    self,
+    ser::{SerializeMap, Serializer},
+    Serialize,
+};
+
 pub enum StatType {
     Mappings = 0,
     Reads,
@@ -13,10 +19,54 @@ pub enum StatType {
     MappedBases,
 }
 
-#[derive(Default, Debug)]
+const STAT_NAMES: [&str; 10] = [
+    "Mappings",
+    "Reads",
+    "Unmapped",
+    "Reversed",
+    "Secondary",
+    "QcFail",
+    "Duplicate",
+    "Paired",
+    "TotalBases",
+    "MappedBases",
+];
+
+fn serialize_counts<S>(ct: &[usize], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let l: usize = ct.iter().fold(0, |s, v| if *v > 0 { s + 1 } else { s });
+    let mut map = serializer.serialize_map(Some(l))?;
+    for (k, v) in STAT_NAMES.iter().zip(ct.iter()) {
+        if *v > 0 {
+            map.serialize_entry(*k, v)?;
+        }
+    }
+    map.end()
+}
+
+fn serialize_vec<S>(ct: &[usize], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let l: usize = ct.iter().fold(0, |s, v| if *v > 0 { s + 1 } else { s });
+    let mut map = serializer.serialize_map(Some(l))?;
+    for (ix, val) in ct.iter().enumerate() {
+        if *val > 0 {
+            map.serialize_entry(&ix, &val)?;
+        }
+    }
+    map.end()
+}
+
+#[derive(Default, Debug, Serialize)]
 pub struct Stats {
+    #[serde(serialize_with = "serialize_counts")]
     counts: [usize; 10],
+    #[serde(serialize_with = "serialize_vec")]
     mapped_pctg: Vec<usize>,
+    #[serde(serialize_with = "serialize_vec")]
     primary_mapq: Vec<usize>,
     read_len: BTreeMap<usize, usize>,
     n_splits: BTreeMap<usize, usize>,
@@ -88,21 +138,5 @@ impl Stats {
 
     pub fn counts(&self, ty: StatType) -> usize {
         self.counts[ty as usize]
-    }
-
-    pub fn mapq(&self) -> &[usize] {
-        &self.primary_mapq
-    }
-
-    pub fn read_len(&self) -> &BTreeMap<usize, usize> {
-        &self.read_len
-    }
-
-    pub fn n_splits(&self) -> &BTreeMap<usize, usize> {
-        &self.n_splits
-    }
-
-    pub fn mapped_pctg(&self) -> &[usize] {
-        &self.mapped_pctg
     }
 }

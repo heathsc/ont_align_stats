@@ -148,14 +148,6 @@ impl Region {
         self.end
     }
 
-    pub fn new(start: usize, end: Option<usize>, mappability: Option<Vec<[usize; 2]>>) -> Self {
-        Self {
-            start,
-            end,
-            mappability,
-        }
-    }
-
     pub fn length(&self) -> Option<usize> {
         self.end.map(|x| x + 1 - self.start)
     }
@@ -391,7 +383,7 @@ impl Regions {
         let v: Vec<_> = seq_names
             .iter()
             .enumerate()
-            .map(|(tid, ctg)| {
+            .map(|(_, ctg)| {
                 self.ctg_reg
                     .get_key_value(*ctg)
                     .map(|(ctg, _)| Rc::clone(ctg))

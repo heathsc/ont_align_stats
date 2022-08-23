@@ -8,7 +8,6 @@ use std::{
 
 use anyhow::Context;
 use crossbeam_channel::{bounded, unbounded};
-use r_htslib::tbx_conf_vcf;
 
 use crate::{
     collect,
@@ -33,13 +32,13 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
     let cfg_ref = &cfg;
     let ifile: &Path = input.as_ref();
 
-    if cfg.indexed() {
+    let st = if cfg.indexed() {
         debug!("Processing input with index");
 
         // Create thread scope so that we can share references across threads
         thread::scope(|scope| {
             let (collector_tx, collector_rx) = bounded(n_tasks * 4);
-            let collector_task = scope.spawn(|| collect::collector(cfg_ref, collector_rx));
+            let collector_task = scope.spawn(|| collect::collector(collector_rx));
 
             // Spawn threads
             let (region_tx, region_rx) = bounded(n_tasks * 4);
@@ -78,8 +77,8 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
                 let _ = jh.join();
             }
             // Wait for collector to finish
-            let _ = collector_task.join();
-        });
+            collector_task.join()
+        })
     } else {
         debug!("Processing input without index");
 
@@ -143,7 +142,7 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             // Spawn handling tasks
 
             let (collector_tx, collector_rx) = bounded(n_tasks * 4);
-            let collector_task = scope.spawn(|| collect::collector(cfg_ref, collector_rx));
+            let collector_task = scope.spawn(|| collect::collector(collector_rx));
 
             let (bam_tx, bam_rx) = unbounded();
             let mut task_tx = Vec::with_capacity(n_tasks);
@@ -176,8 +175,24 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
                 let _ = jh.join();
             }
             // Wait for collector to finish
-            let _ = collector_task.join();
-        });
+            collector_task.join()
+        })
     }
-    Ok(())
+    .expect("Processing error");
+
+    // Create results file name
+    let fname = {
+        let mut d = cfg.dir().map(|p| p.to_owned()).unwrap_or_else(PathBuf::new);
+        d.push(cfg.prefix().expect("Missing output prefix"));
+        d.set_extension("json");
+        d
+    };
+
+    // Open output file
+    let mut wrt = fs::File::create(&fname)
+        .with_context(|| format!("Could not open output file {}", fname.display()))?;
+
+    // Generate JSON
+    serde_json::to_writer_pretty(&mut wrt, &st)
+        .with_context(|| "Could not write out JSON stats file")
 }

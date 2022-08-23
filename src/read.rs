@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, rc::Rc};
+use std::{collections::HashMap, path::Path};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use r_htslib::{
@@ -363,14 +363,6 @@ pub fn reader(
         let end = rlist[0].end() as usize;
         let reg_len = end + 1 - begin;
         assert!(reg_len > 0);
-        debug!(
-            "Reader {} received {} {} - {} len {}",
-            ix,
-            reg,
-            rlist[0].begin(),
-            rlist[0].end(),
-            reg_len
-        );
         cov.reset(begin, end, mappability);
 
         let mut rdr: HtsItrReader<BamRec> = hts.itr_reader(&rlist);
@@ -420,7 +412,7 @@ pub fn reader(
             }
         }
         cov.update_stats(&mut st);
-        info!(
+        trace!(
             "Reader {} read {} records {} reads from {}",
             ix,
             st.counts(StatType::Mappings),
@@ -438,7 +430,7 @@ pub struct ReadHandlerData {
     reg_ix: usize, // Region index within task
     primary_region: bool,
     // Subsequent regions for this record
-    task_info: Option<Vec<(usize, Sender<ReadHandlerData>)>>, // region index within task, sender to task
+    task_info: Option<Vec<(usize, usize, Sender<ReadHandlerData>)>>, // task index, region index within task, sender to task
 }
 
 // Read handler for non-indexed files
@@ -467,7 +459,7 @@ pub fn read_handler(
     }
 
     loop {
-        let mut rd = {
+        let rd = {
             match rx.try_recv() {
                 Ok(rd) => rd,
                 Err(TryRecvError::Empty) => {
@@ -487,49 +479,57 @@ pub fn read_handler(
         let ReadHandlerData {
             mut rec,
             seq_qual,
-            reg_ix,
+            mut reg_ix,
             primary_region,
             mut task_info,
         } = rd;
         let flag = rec.flag();
         let chk_flg = |fg| (flag & fg) != 0;
+
         if primary_region && !chk_flg(BAM_FSUPPLEMENTARY) {
             // Check primary read
             process_primary_read(&mut rec, &mut st, seq_qual.len());
         }
-        if rec.qual() >= min_mapq {
-            // Check coverage
-            process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual)
-        }
-        // Remove next region if exists
-        if let Some((reg_ix, tx, task_info)) = task_info.map(|mut v| {
-            let (ix, tx) = v.pop().unwrap();
-            if v.is_empty() {
-                (ix, tx, None)
-            } else {
-                (ix, tx, Some(v))
+        loop {
+            if rec.qual() >= min_mapq {
+                // Check coverage
+                process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual)
             }
-        }) {
-            let rd = ReadHandlerData {
-                rec,
-                seq_qual,
-                reg_ix,
-                primary_region: false,
-                task_info,
-            };
-            tx.send(rd).expect("Error sending data to read handler")
-        } else {
-            brec_store.push(rec);
-            if brec_store.len() >= buf_size {
-                let _ = bam_tx.send(brec_store);
-                brec_store = Vec::with_capacity(buf_size)
+            // Remove next region if exists
+            if let Some((task_ix, r_ix, tx, t_info)) = task_info.map(|mut v| {
+                let (task_ix, r_ix, tx) = v.pop().unwrap();
+                if v.is_empty() {
+                    (task_ix, r_ix, tx, None)
+                } else {
+                    (task_ix, r_ix, tx, Some(v))
+                }
+            }) {
+                reg_ix = r_ix;
+                task_info = t_info;
+                if task_ix != ix {
+                    let rd = ReadHandlerData {
+                        rec,
+                        seq_qual,
+                        reg_ix,
+                        primary_region: false,
+                        task_info,
+                    };
+                    tx.send(rd).expect("Error sending data to read handler");
+                    break;
+                }
+            } else {
+                brec_store.push(rec);
+                if brec_store.len() >= buf_size {
+                    let _ = bam_tx.send(brec_store);
+                    brec_store = Vec::with_capacity(buf_size)
+                }
+                break;
             }
         }
     }
     debug!("Read handle thread {} - updating stats", ix);
     if !brec_store.is_empty() {
         let _ = bam_tx.send(brec_store);
-        brec_store = Vec::with_capacity(buf_size)
     }
     for cov in cov_vec {
         cov.update_stats(&mut st)
@@ -557,14 +557,14 @@ pub fn read_input(
         brec_buf.push(BamRec::new()?)
     }
 
-    // Make hashtable so we can go from (ctg, idx) to (task, task_region_idx)
+    // Make hashtable so we can go from (ctg, idx) to (task_idx, task_region_idx, task_channel)
     let mut reg_task_hash = HashMap::new();
     for (task_ix, tv) in task_regions.iter().enumerate() {
         let mut tix: usize = 0;
         for tr in tv.iter() {
             for (_, reg_ix) in tr.regions() {
                 let tx = tx_vec[task_ix].clone();
-                reg_task_hash.insert((tr.ctg(), *reg_ix), (tix, tx));
+                reg_task_hash.insert((tr.ctg(), *reg_ix), (task_ix, tix, tx));
                 tix += 1;
             }
         }
@@ -627,13 +627,13 @@ pub fn read_input(
                         .rev()
                         .copied()
                         .map(|i| {
-                            let (reg_ix, tx) =
+                            let (task_ix, reg_ix, tx) =
                                 reg_task_hash.get(&(ctg, i)).expect("No task for region");
-                            (*reg_ix, tx.clone())
+                            (*task_ix, *reg_ix, tx.clone())
                         })
                         .collect();
 
-                    let (task_reg, tx) = v.pop().unwrap();
+                    let (_, task_reg, tx) = v.pop().unwrap();
 
                     let (task_info, sflag) = if rec.qual() >= min_mapq {
                         // Need to process all regions
