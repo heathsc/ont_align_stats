@@ -14,7 +14,7 @@ pub struct Config {
 
     // Operation options
     n_tasks: usize,
-    threads_per_task: usize,
+    threads_per_reader: usize,
     bam_rec_thread_buffer: usize,
 
     // Is the file indexed?
@@ -55,11 +55,11 @@ impl Config {
     pub fn min_qual(&self) -> usize {
         self.min_qual
     }
-    pub fn set_threads_per_task(&mut self, x: usize) {
-        self.threads_per_task = x
+    pub fn set_threads_per_reader(&mut self, x: usize) {
+        self.threads_per_reader = x
     }
-    pub fn threads_per_task(&self) -> usize {
-        self.threads_per_task
+    pub fn threads_per_reader(&self) -> usize {
+        self.threads_per_reader
     }
     pub fn set_n_tasks(&mut self, x: usize) {
         self.n_tasks = x

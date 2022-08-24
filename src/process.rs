@@ -24,7 +24,7 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
 
     let nreg = regions.len();
     let n_tasks = cfg.n_tasks().min(nreg);
-    let nthr = cfg.threads_per_task();
+    let nthr = cfg.threads_per_reader();
     debug!(
         "No. regions: {}, No. read tasks: {}, threads per task: {}",
         nreg, n_tasks, nthr

@@ -346,7 +346,7 @@ pub fn reader(
 ) {
     debug!("Starting reader thread {}", ix);
 
-    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_task())
+    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_reader())
         .expect("Error opening input file in thread");
     let min_qual = cfg.min_qual().min(255) as u8;
     let min_mapq = cfg.min_mapq().min(255) as u8;
@@ -573,7 +573,7 @@ pub fn read_input(
     let mut pair_warning = true;
     let min_mapq = cfg.min_mapq().min(255) as u8;
 
-    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_task())?;
+    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_reader())?;
 
     loop {
         // If we have no empty bam rec then we wait until one appears
