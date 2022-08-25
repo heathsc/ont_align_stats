@@ -10,6 +10,13 @@ pub fn open_input<P: AsRef<Path>>(
     nthreads: usize,
 ) -> anyhow::Result<Hts> {
     let name = name.as_ref();
+    debug!(
+        "Try to open input file {} with threads {}, reference {:?} and no_index option {}",
+        name.display(),
+        nthreads,
+        reference,
+        no_index
+    );
     // Set up htsFormat if we are specifying the reference
     let mut fmt = HtsFormat::default();
     if let Some(s) = reference {

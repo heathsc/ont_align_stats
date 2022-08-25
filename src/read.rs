@@ -346,7 +346,7 @@ pub fn reader(
 ) {
     debug!("Starting reader thread {}", ix);
 
-    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_reader())
+    let mut hts = input::open_input(in_file, false, cfg.reference(), cfg.threads_per_reader())
         .expect("Error opening input file in thread");
     let min_qual = cfg.min_qual().min(255) as u8;
     let min_mapq = cfg.min_mapq().min(255) as u8;
@@ -370,14 +370,9 @@ pub fn reader(
             let flag = rec.flag();
             let chk_flg = |fg| (flag & fg) != 0;
 
-            let seq_qual = rec
-                .get_seq_qual()
-                .expect("Error getting sequence and qualities");
-            let read_len = seq_qual.len();
-
             if chk_flg(BAM_FUNMAP) {
                 st.incr(StatType::Unmapped);
-                st.incr_n(StatType::TotalBases, read_len);
+                st.incr_n(StatType::TotalBases, rec.l_qseq() as usize);
                 st.incr(StatType::Reads);
             } else {
                 let rvec = rvec.expect("Empty region vec for mapped region");
@@ -402,13 +397,17 @@ pub fn reader(
                     if !chk_flg(
                         BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP | BAM_FSUPPLEMENTARY,
                     ) {
-                        process_primary_read(&mut rec, &mut st, read_len);
+                        let rl = rec.l_qseq() as usize;
+                        process_primary_read(&mut rec, &mut st, rl);
                     }
                 }
                 if rec.qual() >= min_mapq
                     && !chk_flg(BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP)
                 {
-                    process_coverage(&mut rec, &seq_qual, &mut cov, min_qual)
+                    let sq = rec
+                        .get_seq_qual()
+                        .expect("Error getting sequence and qualities");
+                    process_coverage(&mut rec, &sq, &mut cov, min_qual)
                 }
             }
         }
@@ -427,11 +426,10 @@ pub fn reader(
 
 pub struct ReadHandlerData {
     rec: BamRec,
-    seq_qual: SeqQual,
     reg_ix: usize, // Region index within task
     primary_region: bool,
     // Subsequent regions for this record
-    task_info: Option<Vec<(usize, usize, Sender<ReadHandlerData>)>>, // task index, region index within task, sender to task
+    task_info: Option<Vec<(usize, usize, Sender<Vec<ReadHandlerData>>)>>, // task index, region index within task, sender to task
 }
 
 // Read handler for non-indexed files
@@ -440,7 +438,7 @@ pub fn read_handler(
     ix: usize,
     region_list: &[TaskRegion],
     tx: Sender<Stats>,
-    rx: Receiver<ReadHandlerData>,
+    rx: Receiver<Vec<ReadHandlerData>>,
     bam_tx: Sender<Vec<BamRec>>,
 ) {
     debug!("Starting read handler thread {}", ix);
@@ -460,7 +458,7 @@ pub fn read_handler(
     }
 
     loop {
-        let rd = {
+        let mut rd_blk = {
             match rx.try_recv() {
                 Ok(rd) => rd,
                 Err(TryRecvError::Empty) => {
@@ -477,54 +475,65 @@ pub fn read_handler(
                 Err(_) => break,
             }
         };
-        let ReadHandlerData {
-            mut rec,
-            seq_qual,
-            mut reg_ix,
-            primary_region,
-            mut task_info,
-        } = rd;
-        let flag = rec.flag();
-        let chk_flg = |fg| (flag & fg) != 0;
+        for rd in rd_blk.drain(..) {
+            let ReadHandlerData {
+                mut rec,
+                mut reg_ix,
+                primary_region,
+                mut task_info,
+            } = rd;
+            let flag = rec.flag();
+            let chk_flg = |fg| (flag & fg) != 0;
 
-        if primary_region && !chk_flg(BAM_FSUPPLEMENTARY) {
-            // Check primary read
-            process_primary_read(&mut rec, &mut st, seq_qual.len());
-        }
-        loop {
-            if rec.qual() >= min_mapq {
-                // Check coverage
-                process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual)
+            if primary_region && !chk_flg(BAM_FSUPPLEMENTARY) {
+                // Check primary read
+                let rl = rec.l_qseq() as usize;
+                process_primary_read(&mut rec, &mut st, rl);
             }
-            // Remove next region if exists
-            if let Some((task_ix, r_ix, tx, t_info)) = task_info.map(|mut v| {
-                let (task_ix, r_ix, tx) = v.pop().unwrap();
-                if v.is_empty() {
-                    (task_ix, r_ix, tx, None)
+            let push_brec = |r: BamRec, mut br: Vec<BamRec>| {
+                br.push(r);
+                if br.len() >= buf_size {
+                    let _ = bam_tx.send(br);
+                    Vec::with_capacity(buf_size)
                 } else {
-                    (task_ix, r_ix, tx, Some(v))
+                    br
                 }
-            }) {
-                reg_ix = r_ix;
-                task_info = t_info;
-                if task_ix != ix {
-                    let rd = ReadHandlerData {
-                        rec,
-                        seq_qual,
-                        reg_ix,
-                        primary_region: false,
-                        task_info,
-                    };
-                    tx.send(rd).expect("Error sending data to read handler");
-                    break;
+            };
+            if rec.qual() >= min_mapq {
+                let seq_qual = rec.get_seq_qual().expect("No sequence/quality data");
+                loop {
+                    // Check coverage
+                    process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual);
+
+                    // Remove next region if exists
+                    if let Some((task_ix, r_ix, tx, t_info)) = task_info.map(|mut v| {
+                        let (task_ix, r_ix, tx) = v.pop().unwrap();
+                        if v.is_empty() {
+                            (task_ix, r_ix, tx, None)
+                        } else {
+                            (task_ix, r_ix, tx, Some(v))
+                        }
+                    }) {
+                        reg_ix = r_ix;
+                        task_info = t_info;
+                        if task_ix != ix {
+                            let rd = ReadHandlerData {
+                                rec,
+                                reg_ix,
+                                primary_region: false,
+                                task_info,
+                            };
+                            tx.send(vec![rd])
+                                .expect("Error sending data to read handler");
+                            break;
+                        }
+                    } else {
+                        brec_store = push_brec(rec, brec_store);
+                        break;
+                    }
                 }
             } else {
-                brec_store.push(rec);
-                if brec_store.len() >= buf_size {
-                    let _ = bam_tx.send(brec_store);
-                    brec_store = Vec::with_capacity(buf_size)
-                }
-                break;
+                brec_store = push_brec(rec, brec_store);
             }
         }
     }
@@ -545,7 +554,7 @@ pub fn read_input_mt(
     in_file: &Path,
     regions: &Regions,
     task_regions: &[Vec<TaskRegion>],
-    tx_vec: Vec<Sender<ReadHandlerData>>,
+    tx_vec: Vec<Sender<Vec<ReadHandlerData>>>,
     bam_rx: Receiver<Vec<BamRec>>,
     stats_tx: Sender<Stats>,
 ) -> anyhow::Result<()> {
@@ -558,6 +567,10 @@ pub fn read_input_mt(
         brec_buf.push(BamRec::new()?)
     }
 
+    let block_size = 256;
+    let mut task_blocks: Vec<Vec<ReadHandlerData>> = (0..n_tasks)
+        .map(|_| Vec::with_capacity(block_size))
+        .collect();
     // Make hashtable so we can go from (ctg, idx) to (task_idx, task_region_idx, task_channel)
     let mut reg_task_hash = HashMap::new();
     for (task_ix, tv) in task_regions.iter().enumerate() {
@@ -597,22 +610,17 @@ pub fn read_input_mt(
         let flag = rec.flag();
         let chk_flg = |fg| (flag & fg) != 0;
 
-        let seq_qual = rec
-            .get_seq_qual()
-            .expect("Error getting sequence and qualities");
-        let read_len = seq_qual.len();
-
         if chk_flg(BAM_FUNMAP) {
             st.incr(StatType::Unmapped);
-            st.incr_n(StatType::TotalBases, read_len);
+            st.incr_n(StatType::TotalBases, rec.l_qseq() as usize);
             st.incr(StatType::Reads);
             brec_buf.push(rec);
         } else if let Some(ctg) =
             regions.tid2ctg(rec.tid().expect("Missing contig for mapped read"))
         {
-            let rvec = regions.ctg_regions(ctg).expect("Unknown contig");
             let x = rec.pos().expect("Missing position for mapped read") + 1;
             let y = rec.endpos() + 1;
+            let rvec = regions.ctg_regions(ctg).expect("Unknown contig");
             let regs = regions::find_overlapping_regions(rvec, x, y);
             if regs.is_empty() {
                 // Read does not overlap requested areas
@@ -635,7 +643,7 @@ pub fn read_input_mt(
                         })
                         .collect();
 
-                    let (_, task_reg, tx) = v.pop().unwrap();
+                    let (task_ix, task_reg, tx) = v.pop().unwrap();
 
                     let (task_info, sflag) = if rec.qual() >= min_mapq {
                         // Need to process all regions
@@ -654,12 +662,18 @@ pub fn read_input_mt(
                     if sflag {
                         let rd = ReadHandlerData {
                             rec,
-                            seq_qual,
                             reg_ix: task_reg,
                             primary_region: true,
                             task_info,
                         };
-                        tx.send(rd).expect("Error sending read to read handler");
+                        task_blocks[task_ix].push(rd);
+                        if task_blocks[task_ix].len() >= block_size {
+                            let tb = std::mem::replace(
+                                &mut task_blocks[task_ix],
+                                Vec::with_capacity(block_size),
+                            );
+                            tx.send(tb).expect("Error sending read to read handler");
+                        }
                     } else {
                         brec_buf.push(rec)
                     }
@@ -669,6 +683,13 @@ pub fn read_input_mt(
             }
         } else {
             brec_buf.push(rec);
+        }
+    }
+    for (ix, tb) in task_blocks.drain(..).enumerate() {
+        if !tb.is_empty() {
+            tx_vec[ix]
+                .send(tb)
+                .expect("Error sending read to read handler");
         }
     }
     stats_tx.send(st).expect("Error sending Stats to collector");
@@ -711,14 +732,9 @@ pub fn read_input(
         let flag = rec.flag();
         let chk_flg = |fg| (flag & fg) != 0;
 
-        let seq_qual = rec
-            .get_seq_qual()
-            .expect("Error getting sequence and qualities");
-        let read_len = seq_qual.len();
-
         if chk_flg(BAM_FUNMAP) {
             st.incr(StatType::Unmapped);
-            st.incr_n(StatType::TotalBases, read_len);
+            st.incr_n(StatType::TotalBases, rec.l_qseq() as usize);
             st.incr(StatType::Reads);
         } else if let Some(ctg) =
             regions.tid2ctg(rec.tid().expect("Missing contig for mapped read"))
@@ -738,10 +754,14 @@ pub fn read_input(
                 update_flag_stats(flag, &mut st);
                 if !chk_flg(BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP) {
                     if !chk_flg(BAM_FSUPPLEMENTARY) {
-                        process_primary_read(&mut rec, &mut st, seq_qual.len());
+                        let rl = rec.l_qseq() as usize;
+                        process_primary_read(&mut rec, &mut st, rl);
                     }
                     if rec.qual() >= min_mapq {
                         // Check coverage
+                        let seq_qual = rec
+                            .get_seq_qual()
+                            .expect("Error getting sequence and qualities");
                         for reg_ix in regs.iter() {
                             process_coverage(&mut rec, &seq_qual, &mut cvec[*reg_ix], min_qual)
                         }
