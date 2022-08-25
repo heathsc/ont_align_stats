@@ -287,7 +287,7 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
 
 fn process_coverage(rec: &mut BamRec, seq_qual: &SeqQual, cov: &mut Coverage, min_qual: u8) {
     if let Some(cigar) = rec.cigar() {
-        let mut x = rec.pos().expect("No start position for mapped read");
+        let mut x = rec.pos().expect("No start position for mapped read") + 1;
         let mut sq = seq_qual.iter().map(|x| (*x & 3, *x >> 2));
         for elem in cigar.iter() {
             let l = elem.op_len() as usize;
@@ -359,11 +359,11 @@ pub fn reader(
         let mappability = rvec.and_then(|v| v[reg_ix].mappability());
         let rlist = hts.make_region_list(&[&reg]);
         assert_eq!(rlist.len(), 1, "Empty region list for {}", reg);
-        let begin = rlist[0].begin() as usize;
+        let begin = (rlist[0].begin() + 1) as usize;
         let end = rlist[0].end() as usize;
-        let reg_len = end + 1 - begin;
-        assert!(reg_len > 0);
-        cov.reset(begin, end, mappability);
+        if end >= begin {
+            cov.reset(begin, end, mappability)
+        }
 
         let mut rdr: HtsItrReader<BamRec> = hts.itr_reader(&rlist);
         while rdr.read(&mut rec).expect("Error reading from input file") {
@@ -378,11 +378,12 @@ pub fn reader(
             if chk_flg(BAM_FUNMAP) {
                 st.incr(StatType::Unmapped);
                 st.incr_n(StatType::TotalBases, read_len);
+                st.incr(StatType::Reads);
             } else {
                 let rvec = rvec.expect("Empty region vec for mapped region");
                 // Check if mapping could appear in another region
-                let x = rec.pos().expect("Missing position for mapped read");
-                let y = rec.endpos();
+                let x = rec.pos().expect("Missing position for mapped read") + 1;
+                let y = rec.endpos() + 1;
                 // If mapping lies entirely within region then it can not appear in another region (as regions do not overlap)
                 // If not then we check to see if this is the first region the mapping would appear in otherwise we skip
                 let primary_region = if x < begin || y > end {
@@ -604,13 +605,14 @@ pub fn read_input_mt(
         if chk_flg(BAM_FUNMAP) {
             st.incr(StatType::Unmapped);
             st.incr_n(StatType::TotalBases, read_len);
+            st.incr(StatType::Reads);
             brec_buf.push(rec);
         } else if let Some(ctg) =
             regions.tid2ctg(rec.tid().expect("Missing contig for mapped read"))
         {
             let rvec = regions.ctg_regions(ctg).expect("Unknown contig");
-            let x = rec.pos().expect("Missing position for mapped read");
-            let y = rec.endpos();
+            let x = rec.pos().expect("Missing position for mapped read") + 1;
+            let y = rec.endpos() + 1;
             let regs = regions::find_overlapping_regions(rvec, x, y);
             if regs.is_empty() {
                 // Read does not overlap requested areas
@@ -717,6 +719,7 @@ pub fn read_input(
         if chk_flg(BAM_FUNMAP) {
             st.incr(StatType::Unmapped);
             st.incr_n(StatType::TotalBases, read_len);
+            st.incr(StatType::Reads);
         } else if let Some(ctg) =
             regions.tid2ctg(rec.tid().expect("Missing contig for mapped read"))
         {
@@ -724,8 +727,8 @@ pub fn read_input(
             // chash is created from regions so if the above line passes the following can not fail
             let cvec = chash.get_mut(ctg).unwrap();
 
-            let x = rec.pos().expect("Missing position for mapped read");
-            let y = rec.endpos();
+            let x = rec.pos().expect("Missing position for mapped read") + 1;
+            let y = rec.endpos() + 1;
             let regs = regions::find_overlapping_regions(rvec, x, y);
             if !regs.is_empty() {
                 if chk_flg(BAM_FPAIRED) && !pair_warning {
