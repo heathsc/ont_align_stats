@@ -60,6 +60,23 @@ where
     map.end()
 }
 
+fn serialize_cov<S>(ct: &BTreeMap<usize, usize>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut map = serializer.serialize_map(Some(ct.len()))?;
+    let tot: usize = ct.values().copied().sum();
+    let mut rest = tot;
+    let ftot = tot as f64;
+
+    for (ix, val) in ct.iter() {
+        let z = (rest as f64) / ftot;
+        rest -= *val;
+        map.serialize_entry(&ix, &(*val, z))?;
+    }
+    map.end()
+}
+
 #[derive(Default, Debug, Serialize)]
 pub struct Stats {
     #[serde(serialize_with = "serialize_counts")]
@@ -70,6 +87,7 @@ pub struct Stats {
     primary_mapq: Vec<usize>,
     read_len: BTreeMap<usize, usize>,
     n_splits: BTreeMap<usize, usize>,
+    #[serde(serialize_with = "serialize_cov")]
     coverage: BTreeMap<usize, usize>,
 }
 
