@@ -429,29 +429,34 @@ pub fn find_overlapping_regions(rvec: &[Region], x: usize, y: usize) -> Vec<usiz
     let mut v = Vec::new();
 
     // Find first region overlapping x-y
-    let i = match rvec.binary_search_by_key(&x, |r| r.start()) {
-        Ok(i) => i,
+    if let Some(i) = match rvec.binary_search_by_key(&x, |r| r.start()) {
+        Ok(i) => Some(i),
         Err(i) => {
             if i > 0 {
                 // Check if the read overlaps previous region
                 if rvec[i - 1].end().map(|end| end >= x).unwrap_or(false) {
-                    i - 1
+                    Some(i - 1)
+                } else if i < rvec.len() && rvec[i].start() <= y {
+                    Some(i)
                 } else {
-                    i
+                    None
                 }
+            } else if rvec[i].start() <= y {
+                Some(i)
             } else {
-                i
+                None
             }
         }
-    };
-    v.push(i);
+    } {
+        v.push(i);
 
-    // Check if the following regions also overlap.  If so add to v
-    for (ix, r) in rvec[i + 1..].iter().enumerate() {
-        if r.start() <= y {
-            v.push(ix + i + 1)
-        } else {
-            break;
+        // Check if the following regions also overlap.  If so add to v
+        for (ix, r) in rvec[i + 1..].iter().enumerate() {
+            if r.start() <= y {
+                v.push(ix + i + 1)
+            } else {
+                break;
+            }
         }
     }
 

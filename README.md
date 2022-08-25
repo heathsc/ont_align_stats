@@ -126,6 +126,7 @@ ont_align_stats has several command line options for controlling its operation.
 
 ## <a name="changes"></a>Changes
 
+ - 0.5.2 Fix region selection bug
  - 0.5.1 Clean up code.  Correct errors in CLI interface.
  - 0.5.0 Output in JSON format.  File name generated using the dir and prefix options
  - 0.4.0 Non-indexed operation works (but is slower and uses much more memory than indexed operation)

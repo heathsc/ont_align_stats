@@ -79,8 +79,8 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             // Wait for collector to finish
             collector_task.join()
         })
-    } else {
-        debug!("Processing input without index");
+    } else if n_tasks > 1 {
+        debug!("Processing input without index using {} tasks", n_tasks);
 
         // First we assign regions to each task
 
@@ -159,7 +159,7 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
                 .collect();
             drop(bam_tx);
             // Read from input
-            read::read_input(
+            read::read_input_mt(
                 cfg_ref,
                 ifile,
                 &regions,
@@ -174,6 +174,22 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             for jh in tasks.drain(..) {
                 let _ = jh.join();
             }
+            // Wait for collector to finish
+            collector_task.join()
+        })
+    } else {
+        debug!("Processing input without index");
+
+        thread::scope(|scope| {
+            // Spawn handling tasks
+
+            let (collector_tx, collector_rx) = bounded(n_tasks * 4);
+            let collector_task = scope.spawn(|| collect::collector(collector_rx));
+
+            // Read from input
+            read::read_input(cfg_ref, ifile, &regions, collector_tx)
+                .expect("Error opening input file");
+
             // Wait for collector to finish
             collector_task.join()
         })
