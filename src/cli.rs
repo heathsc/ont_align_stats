@@ -235,17 +235,21 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     let cores = num_cpus::get();
 
     // Threads arguments
-    let n_tasks: usize = m
-        .try_get_one("n_tasks")
-        .expect("Error parsing n_tasks option")
-        .map(|x: &usize| (*x).max(1))
-        .unwrap_or(physical_cores);
+    let n_tasks = m
+        .value_of_t::<usize>("n_tasks")
+        .map(|x| x.max(1))
+        .unwrap_or(physical_cores.min(16));
 
-    let threads_per_reader: usize = m
-        .try_get_one("threads_per_reader")
-        .expect("Error parsing threads_per_reader option")
-        .map(|x: &usize| (*x).max(1))
-        .unwrap_or_else(|| if indexed { physical_cores } else { cores });
+    let threads_per_reader = m
+        .value_of_t::<usize>("threads_per_reader")
+        .map(|x| x.max(1))
+        .unwrap_or_else(|_| {
+            if indexed {
+                physical_cores.min(16)
+            } else {
+                cores.min(16)
+            }
+        });
 
     // If multithreading split up regions into chunks of at most max_block_size
 
