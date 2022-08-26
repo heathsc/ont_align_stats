@@ -78,12 +78,14 @@ fn cli_model() -> ArgMatches {
             Arg::new("n_tasks")
                 .short('n').long("n-tasks")
                 .takes_value(true).value_name("INT")
+                .default_value("1")
                 .help("No. of parallel read tasks [cores]")
         )
         .arg(
             Arg::new("threads_per_reader")
                 .short('t').long("threads-per-reader")
                 .takes_value(true).value_name("INT")
+                .default_value("1")
                 .help("No. of threads per SAM/BAM/CRAM reader [cores]")
         )
         .arg(
@@ -231,25 +233,9 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     // Fill in end values if not present
     regions.fix_open_intervals(&seq, &lengths);
 
-    let physical_cores = num_cpus::get_physical();
-    let cores = num_cpus::get();
-
     // Threads arguments
-    let n_tasks = m
-        .value_of_t::<usize>("n_tasks")
-        .map(|x| x.max(1))
-        .unwrap_or(physical_cores.min(16));
-
-    let threads_per_reader = m
-        .value_of_t::<usize>("threads_per_reader")
-        .map(|x| x.max(1))
-        .unwrap_or_else(|_| {
-            if indexed {
-                physical_cores.min(16)
-            } else {
-                cores.min(16)
-            }
-        });
+    let n_tasks = m.value_of_t::<usize>("n_tasks").unwrap();
+    let threads_per_reader = m.value_of_t::<usize>("threads_per_reader").unwrap();
 
     // If multithreading split up regions into chunks of at most max_block_size
 

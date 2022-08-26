@@ -84,7 +84,8 @@ Increased performance can be achieved using the multithreading options.  There a
 The --threads-per-reader option determines the number of threads for each file reading 
 task; libhts is used to read SAM/BAM/CRAM files, and can use multiple threads to increase the
 performance of the file reading/decoding.  The behaviour of the --n-tasks option depends on 
-whether the input file is indexed or not.  Both options are set by default to use all available cores.
+whether the input file is indexed or not.  Both options are set by default to 1 so to obtain any
+benefit from multi-threading these options should be used.
 
 If the file is indexed and the requested number of tasks is >1
 then the input file will be opened multiple times and read from in parallel.  The optimal 
@@ -117,8 +118,8 @@ ont_align_stats has several command line options for controlling its operation.
 | m     | mappability        | Mappability BED file                                       | 1                 |
 | T     | reference          | Reference FASTA file (for CRAM files)                      | 1                 |
 |||||
-| n     | n-tasks            | Number of parallel read tasks                              | available cores   |
-| t     | threads-per-reader | Number of thread per SAM/BAM/CRAM reader                   | available cores   |
+| n     | n-tasks            | Number of parallel read tasks                              | 1                 |
+| t     | threads-per-reader | Number of thread per SAM/BAM/CRAM reader                   | 1                 |
 |||||
 | l     | log-level          | Set log level [none, error, warn, info, debug, trace]      | info              |
 |       | timestamp          | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
