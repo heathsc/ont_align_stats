@@ -9,7 +9,7 @@ Utility for calculating mapping statistics for (mostly) ONT reads from indexed B
     - [Command line options](#cli)
 - [Output](#output)
 - [Changes](#changes)
-- 
+
 ## <a name="intro"></a>Introduction
 
 ## <a name="install"></a>Installation
