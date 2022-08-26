@@ -8,12 +8,12 @@ pub fn open_input<P: AsRef<Path>>(
     no_index: bool,
     reference: Option<&Path>,
     nthreads: usize,
+    tpool: Option<&HtsThreadPool>,
 ) -> anyhow::Result<Hts> {
     let name = name.as_ref();
     debug!(
-        "Try to open input file {} with threads {}, reference {:?} and no_index option {}",
+        "Try to open input file {} with reference {:?} and no_index option {}",
         name.display(),
-        nthreads,
         reference,
         no_index
     );
@@ -22,7 +22,8 @@ pub fn open_input<P: AsRef<Path>>(
     if let Some(s) = reference {
         fmt.opt_add(format!("reference={}", s.display()))?
     }
-    if nthreads > 1 {
+    if nthreads > 0 && tpool.is_none() {
+        debug!("Setting nthreads option to {} for input file", nthreads);
         fmt.opt_add(format!("nthreads={}", nthreads))?
     }
     // Try opening input file
@@ -42,6 +43,12 @@ pub fn open_input<P: AsRef<Path>>(
                 "Warning - index not found for input file {}",
                 name.display()
             );
+        }
+
+        // Try and attach thread pool if presemt
+        if let Some(tp) = tpool {
+            debug!("Try to attach thread pool to file");
+            hts.hts_file_mut().set_thread_pool(tp)?
         }
         Ok(hts)
     }

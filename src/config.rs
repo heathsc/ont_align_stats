@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    time::{Instant, Duration},
+    time::{Duration, Instant},
 };
 
 #[derive(Default)]
@@ -17,7 +17,7 @@ pub struct Config {
 
     // Operation options
     n_tasks: usize,
-    threads_per_reader: usize,
+    hts_threads: usize,
     bam_rec_thread_buffer: usize,
     non_index_buffer_size: usize,
 
@@ -62,8 +62,8 @@ impl Config {
     pub fn min_qual(&self) -> usize {
         self.min_qual
     }
-    pub fn set_threads_per_reader(&mut self, x: usize) {
-        self.threads_per_reader = x
+    pub fn set_hts_threads(&mut self, x: usize) {
+        self.hts_threads = x
     }
     pub fn set_start_time(&mut self, ins: Instant) {
         self.start_time = Some(ins)
@@ -71,8 +71,8 @@ impl Config {
     pub fn elapsed(&self) -> Option<Duration> {
         self.start_time.as_ref().map(|ins| ins.elapsed())
     }
-    pub fn threads_per_reader(&self) -> usize {
-        self.threads_per_reader
+    pub fn hts_threads(&self) -> usize {
+        self.hts_threads
     }
     pub fn set_n_tasks(&mut self, x: usize) {
         self.n_tasks = x
@@ -89,7 +89,9 @@ impl Config {
     pub fn bam_rec_thread_buffer(&self) -> usize {
         self.bam_rec_thread_buffer
     }
-    pub fn non_index_buffer_size(&self) -> usize { self.non_index_buffer_size }
+    pub fn non_index_buffer_size(&self) -> usize {
+        self.non_index_buffer_size
+    }
     pub fn set_indexed(&mut self, x: bool) {
         self.indexed = x
     }

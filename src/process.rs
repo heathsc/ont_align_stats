@@ -10,6 +10,7 @@ use std::{
 use anyhow::Context;
 use crossbeam_channel::{bounded, unbounded};
 use indexmap::IndexMap;
+use r_htslib::HtsThreadPool;
 
 use serde::{
     self,
@@ -54,7 +55,7 @@ pub fn process(
 ) -> anyhow::Result<()> {
     let nreg = regions.len();
     let n_tasks = cfg.n_tasks().min(nreg);
-    let nthr = cfg.threads_per_reader();
+    let nthr = cfg.hts_threads();
     debug!(
         "No. regions: {}, No. read tasks: {}, threads per task: {}",
         nreg, n_tasks, nthr
@@ -72,6 +73,9 @@ pub fn process(
 
     let st = if cfg.indexed() {
         debug!("Processing input with index");
+
+        let tpool = HtsThreadPool::new(cfg.hts_threads());
+        let tpool_ref = tpool.as_ref();
         // Create thread scope so that we can share references across threads
         thread::scope(|scope| {
             let (collector_tx, collector_rx) = bounded(n_tasks * 4);
@@ -83,7 +87,7 @@ pub fn process(
                 .map(|ix| {
                     let rx = region_rx.clone();
                     let tx = collector_tx.clone();
-                    scope.spawn(move || read::reader(cfg_ref, ix, ifile, tx, rx))
+                    scope.spawn(move || read::reader(cfg_ref, ix, ifile, tx, rx, tpool_ref))
                 })
                 .collect();
             drop(collector_tx);

@@ -80,19 +80,21 @@ intersect of the two sets of regions is considered for the coverage statistics.
 ### <a name="thread"></a>Multithreading options
 
 Increased performance can be achieved using the multithreading options.  There are two such options:
---n-tasks (or -n) and --threads-per-reader (or -t).  
-The --threads-per-reader option determines the number of threads for each file reading 
+--n-tasks (or -n) and --hts-threads (or -t).  
+The --hts-threads option determines the number of additional threads for each hts file reading 
 task; libhts is used to read SAM/BAM/CRAM files, and can use multiple threads to increase the
 performance of the file reading/decoding.  The behaviour of the --n-tasks option depends on 
-whether the input file is indexed or not.  Both options are set by default to 1 so to obtain any
+whether the input file is indexed or not.  The --hts-threads and --n-tasks options are set to 
+0 and 1 respectively by default, so to obtain any
 benefit from multi-threading these options should be used.
 
 If the file is indexed and the requested number of tasks is >1
 then the input file will be opened multiple times and read from in parallel.  The optimal 
-combination of --n-tasks and --threads-per-reader will depend on the computer system and should be found
+combination of --n-tasks and --hts-threads will depend on the computer system and should be found
 by doing some preliminary testing.  On a 8 (physical) core test laptop with SSDs, saturation of the CPUs (so 
-16 virtual cores running at almost 100%) can be achieved with n-tasks set to 6-7 and threads-per-reader set to 3-4
-but your mileage might vary.
+16 virtual cores running at almost 100%) can be achieved with n-tasks set to the number of physical cores and 
+hts-threads set to the number of virtual cores, but your mileage might vary.  Note that if n-tasks is set
+to >1 the hts threads are shared across tasks.
 
 If the file is not indexed the input file will only be opened once irrespective of 
 the --n-tasks setting; however the genomic regions to be considered will be split between the number
@@ -105,27 +107,27 @@ It would be much better in this case to generate the index before running ont_al
 
 ont_align_stats has several command line options for controlling its operation.
 
-| Short | Long               | Description                                                | Default           |
-|-------|--------------------|------------------------------------------------------------|-------------------|
- | q     | min-maxq           | Minimum MAXQ for calculating mapping statistics            | 10                |
-| b     | min-qual           | Minimum base quality for coverage statistics               | 10                |
-| r     | region             | Genomic region                                             |                   |
-| R     | regions            | BED file containing genomic regions                        |                   |
+| Short | Long         | Description                                                | Default           |
+|-------|--------------|------------------------------------------------------------|-------------------|
+ | q     | min-maxq     | Minimum MAXQ for calculating mapping statistics            | 10                |
+| b     | min-qual     | Minimum base quality for coverage statistics               | 10                |
+| r     | region       | Genomic region                                             |                   |
+| R     | regions      | BED file containing genomic regions                        |                   |
 |||||
-| d     | dir                | Set output directory                                       | Current directory |
-| P     | prefix             | Set prefix for output files                                | ont_align_stats   |
+| d     | dir          | Set output directory                                       | Current directory |
+| P     | prefix       | Set prefix for output files                                | ont_align_stats   |
 |||||
-| m     | mappability        | Mappability BED file                                       | 1                 |
-| T     | reference          | Reference FASTA file (for CRAM files)                      | 1                 |
+| m     | mappability  | Mappability BED file                                       | 1                 |
+| T     | reference    | Reference FASTA file (for CRAM files)                      | 1                 |
 |||||
-| n     | n-tasks            | Number of parallel read tasks                              | 1                 |
-| t     | threads-per-reader | Number of thread per SAM/BAM/CRAM reader                   | 1                 |
+| n     | n-tasks      | Number of parallel read tasks                              | 1                 |
+| t     | hts-threads  | Number of additional threads for hts readers               | 1                 |
 |||||
-| l     | log-level          | Set log level [none, error, warn, info, debug, trace]      | info              |
-|       | timestamp          | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
-|       | quiet              | Suppress all logging                                       |                   |
-| h     | help               | Print help information                                     |                   |
-| V     | version            | Print version information                                  |                   |
+| l     | log-level    | Set log level [none, error, warn, info, debug, trace]      | info              |
+|       | timestamp    | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
+|       | quiet        | Suppress all logging                                       |                   |
+| h     | help         | Print help information                                     |                   |
+| V     | version      | Print version information                                  |                   |
 
 ## <a name="changes"></a>Output
 The main output file from ont_align_stats is a JSON file containing at the root level a map with (currently) two elements, metadata and stats.
@@ -142,6 +144,7 @@ These are described below:
 
 ## <a name="changes"></a>Changes
 
+ - 0.8.0 Switch to using thread pools for hts readers for indexed reading when the file is opened multiple times.  In this way the threads are shared across tasks so the total number of threads is reduced.
  - 0.7.0 Change output so there is a metadata section and the stats section
  - 0.6.1 Optimizations, particularly for the non-indexed case
  - 0.6.0 Change coverage output in JSON file so that we report the proportion of genome covered with at least the given coverage level as well as the raw number of bases

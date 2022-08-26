@@ -2,8 +2,8 @@ use std::{collections::HashMap, path::Path};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use r_htslib::{
-    BamRec, Cigar, CigarOp, HtsItrReader, HtsRead, SeqQual, BAM_FDUP, BAM_FPAIRED, BAM_FQCFAIL,
-    BAM_FREVERSE, BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FUNMAP,
+    BamRec, Cigar, CigarOp, HtsItrReader, HtsRead, HtsThreadPool, SeqQual, BAM_FDUP, BAM_FPAIRED,
+    BAM_FQCFAIL, BAM_FREVERSE, BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FUNMAP,
 };
 
 use crate::{
@@ -343,10 +343,11 @@ pub fn reader(
     in_file: &Path,
     tx: Sender<Stats>,
     rx: Receiver<(String, usize, Option<&Vec<Region>>)>,
+    tpool: Option<&HtsThreadPool>,
 ) {
     debug!("Starting reader thread {}", ix);
 
-    let mut hts = input::open_input(in_file, false, cfg.reference(), cfg.threads_per_reader())
+    let mut hts = input::open_input(in_file, false, cfg.reference(), cfg.hts_threads(), tpool)
         .expect("Error opening input file in thread");
     let min_qual = cfg.min_qual().min(255) as u8;
     let min_mapq = cfg.min_mapq().min(255) as u8;
@@ -587,7 +588,7 @@ pub fn read_input_mt(
     let mut pair_warning = true;
     let min_mapq = cfg.min_mapq().min(255) as u8;
 
-    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_reader())?;
+    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.hts_threads(), None)?;
 
     loop {
         // If we have no empty bam rec then we wait until one appears

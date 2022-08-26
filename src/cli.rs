@@ -79,14 +79,14 @@ fn cli_model() -> ArgMatches {
                 .short('n').long("n-tasks")
                 .takes_value(true).value_name("INT")
                 .default_value("1")
-                .help("No. of parallel read tasks [cores]")
+                .help("No. parallel read tasks")
         )
         .arg(
-            Arg::new("threads_per_reader")
-                .short('t').long("threads-per-reader")
+            Arg::new("hts_threads")
+                .short('t').long("hts_threads")
                 .takes_value(true).value_name("INT")
-                .default_value("1")
-                .help("No. of threads per SAM/BAM/CRAM reader [cores]")
+                .default_value("0")
+                .help("No. extra threads for hts reading")
         )
         .arg(
             Arg::new("max_block_size")
@@ -212,7 +212,7 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     let no_index = m.is_present("no_index");
     let reference = m.value_of("reference").map(Path::new);
 
-    let hts = open_input(input, no_index, reference, 1)?;
+    let hts = open_input(input, no_index, reference, 1, None)?;
     let indexed = hts.has_index();
 
     // Get list of sequence names and lengths from file header
@@ -234,8 +234,8 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     regions.fix_open_intervals(&seq, &lengths);
 
     // Threads arguments
-    let n_tasks = m.value_of_t::<usize>("n_tasks").unwrap();
-    let threads_per_reader = m.value_of_t::<usize>("threads_per_reader").unwrap();
+    let n_tasks = m.value_of_t::<usize>("n_tasks").unwrap().max(1);
+    let hts_threads = m.value_of_t::<usize>("hts_threads").unwrap();
 
     // If multithreading split up regions into chunks of at most max_block_size
 
@@ -272,7 +272,7 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     cfg.set_n_tasks(n_tasks);
     cfg.set_min_mapq(m.value_of_t("min_maxq").unwrap());
     cfg.set_min_qual(m.value_of_t("min_qual").unwrap());
-    cfg.set_threads_per_reader(threads_per_reader);
+    cfg.set_hts_threads(hts_threads);
     cfg.set_bam_rec_thread_buffer(m.value_of_t("bam_rec_thread_buffer").unwrap());
     cfg.set_non_index_buffer_size(m.value_of_t("non_index_buffer_size").unwrap());
     if let Some(s) = reference {

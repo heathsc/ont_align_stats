@@ -344,7 +344,7 @@ checksum = "074864da206b4973b84eb91683020dbefd6a8c3f0f38e054d93954e891935e4e"
 
 [[package]]
 name = "ont_align_stats"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "chrono",
