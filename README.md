@@ -7,8 +7,9 @@ Utility for calculating mapping statistics for (mostly) ONT reads from indexed B
 - [General usage](#usage)
     - [Multithreading options](#thread)
     - [Command line options](#cli)
+- [Output](#output)
 - [Changes](#changes)
-
+- 
 ## <a name="intro"></a>Introduction
 
 ## <a name="install"></a>Installation
@@ -79,11 +80,11 @@ intersect of the two sets of regions is considered for the coverage statistics.
 ### <a name="thread"></a>Multithreading options
 
 Increased performance can be achieved using the multithreading options.  There are two such options:
---n-tasks (or -n) and --threads-per-reader (or -t).  Both by default are set to 1. 
+--n-tasks (or -n) and --threads-per-reader (or -t).  
 The --threads-per-reader option determines the number of threads for each file reading 
 task; libhts is used to read SAM/BAM/CRAM files, and can use multiple threads to increase the
 performance of the file reading/decoding.  The behaviour of the --n-tasks option depends on 
-whether the input file is indexed or not.  
+whether the input file is indexed or not.  Both options are set by default to use all available cores.
 
 If the file is indexed and the requested number of tasks is >1
 then the input file will be opened multiple times and read from in parallel.  The optimal 
@@ -95,8 +96,9 @@ but your mileage might vary.
 If the file is not indexed the input file will only be opened once irrespective of 
 the --n-tasks setting; however the genomic regions to be considered will be split between the number
 of specified tasks so some parallelism can be achieved.  This is not as effective as with an indexed 
-input file, however setting n-tasks to 2-3 and threads-per-reader to 5-6 works well with the test laptop 
-described above.
+input file, however setting n-tasks to the number of physical cores and threads-per-reader to at least the same value works well with the test laptop 
+described above.  Note that if the file is sorted in genomic order (but not indexed) then increasing the number of tasks will have little effect.
+It would be much better in this case to generate the index before running ont_align_stats.
 
 ### <a name="cli"></a>Command line options
 
@@ -115,8 +117,8 @@ ont_align_stats has several command line options for controlling its operation.
 | m     | mappability        | Mappability BED file                                       | 1                 |
 | T     | reference          | Reference FASTA file (for CRAM files)                      | 1                 |
 |||||
-| n     | n-tasks            | Number of parallel read tasks                              | 1                 |
-| t     | threads-per-reader | Number of thread per SAM/BAM/CRAM reader                   | 1                 |
+| n     | n-tasks            | Number of parallel read tasks                              | available cores   |
+| t     | threads-per-reader | Number of thread per SAM/BAM/CRAM reader                   | available cores   |
 |||||
 | l     | log-level          | Set log level [none, error, warn, info, debug, trace]      | info              |
 |       | timestamp          | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
@@ -124,8 +126,22 @@ ont_align_stats has several command line options for controlling its operation.
 | h     | help               | Print help information                                     |                   |
 | V     | version            | Print version information                                  |                   |
 
+## <a name="changes"></a>Output
+The main output file from ont_align_stats is a JSON file containing at the root level a map with (currently) two elements, metadata and stats.
+The metadata element is a map with a number of key:value pairs giving information about the command, the machine used, option selected etc. 
+The stats element is also a map with the following elements: counts, mapped_pctg, primary_mapq, read_len, n_splits, and coverage.
+These are described below:
+
+ - counts: set of raw counts of either mappings, reads or bases.
+ - mapped_pctg: distribution of the number of reads where the given % of the read is mapped (i.e., ignoring clipped regions)
+ - primary_mapq: distribution of the number of primary mappings with the given MAPQ value.
+ - read_len: distribution of the number of reads with a given read length.
+ - n_splits: distribution of the number of reads with a given number of split mappings (MAPQ > 0).
+ - coverage: map with the number of mappable bases with a given coverage as well as the % of mappable bases with at least the given coverage.
+
 ## <a name="changes"></a>Changes
 
+ - 0.7.0 Change output so there is a metadata section and the stats section
  - 0.6.1 Optimizations, particularly for the non-indexed case
  - 0.6.0 Change coverage output in JSON file so that we report the proportion of genome covered with at least the given coverage level as well as the raw number of bases
  - 0.5.3 Resolve some problems with read selection in rare cases

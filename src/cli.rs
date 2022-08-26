@@ -1,18 +1,21 @@
 use std::{
     collections::HashMap,
+    env,
     fmt::Display,
-    num::NonZeroUsize,
     path::{Path, PathBuf},
     str::FromStr,
+    time::Instant,
 };
 
 use crate::config::Config;
-use crate::regions::Regions;
-use anyhow::{Context, Error};
-use clap::{crate_version, Arg, ArgMatches, Command};
-
 use crate::input::open_input;
 use crate::mappability::Mappability;
+use crate::metadata::collect_starting_metadata;
+use crate::regions::Regions;
+
+use anyhow::{Context, Error};
+use clap::{crate_version, Arg, ArgMatches, Command};
+use indexmap::IndexMap;
 
 /// Set up stderrlog using options from clap::ArgMatches
 ///
@@ -75,21 +78,25 @@ fn cli_model() -> ArgMatches {
             Arg::new("n_tasks")
                 .short('n').long("n-tasks")
                 .takes_value(true).value_name("INT")
-                .default_value("1")
-                .help("No. of parallel read tasks")
+                .help("No. of parallel read tasks [cores]")
         )
         .arg(
             Arg::new("threads_per_reader")
                 .short('t').long("threads-per-reader")
                 .takes_value(true).value_name("INT")
-                .default_value("1")
-                .help("No. of threads per SAM/BAM/CRAM reader")
+                .help("No. of threads per SAM/BAM/CRAM reader [cores]")
         )
         .arg(
             Arg::new("max_block_size")
                 .long("max-block-size").hidden(true)
                 .takes_value(true).value_name("INT")
                 .default_value("5000000")
+        )
+        .arg(
+            Arg::new("non_index_buffer_size")
+                .long("non-index-buffer-size").hidden(true)
+                .takes_value(true).value_name("INT")
+                .default_value("1024")
         )
         .arg(
             Arg::new("max_gap")
@@ -188,7 +195,11 @@ fn cli_model() -> ArgMatches {
         .get_matches()
 }
 
-pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
+pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'static str, String>)> {
+    let start_time = Instant::now();
+    let mut metadata = IndexMap::new();
+    collect_starting_metadata(&mut metadata);
+
     let m = cli_model();
     init_log(&m);
 
@@ -220,14 +231,21 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
     // Fill in end values if not present
     regions.fix_open_intervals(&seq, &lengths);
 
-    // Threads argument
-    let n_tasks = usize::from(
-        parse::<NonZeroUsize>(
-            m.value_of("n_tasks")
-                .expect("Missing default n_tasks value"),
-        )
-        .with_context(|| "Error parsing threads option")?,
-    );
+    let physical_cores = num_cpus::get_physical();
+    let cores = num_cpus::get();
+
+    // Threads arguments
+    let n_tasks: usize = m
+        .try_get_one("n_tasks")
+        .expect("Error parsing n_tasks option")
+        .map(|x: &usize| (*x).max(1))
+        .unwrap_or(physical_cores);
+
+    let threads_per_reader: usize = m
+        .try_get_one("threads_per_reader")
+        .expect("Error parsing threads_per_reader option")
+        .map(|x: &usize| (*x).max(1))
+        .unwrap_or_else(|| if indexed { physical_cores } else { cores });
 
     // If multithreading split up regions into chunks of at most max_block_size
 
@@ -259,12 +277,14 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
     regions.add_tid_info(&seq);
 
     let mut cfg = Config::default();
+    cfg.set_start_time(start_time);
     cfg.set_indexed(indexed);
     cfg.set_n_tasks(n_tasks);
     cfg.set_min_mapq(m.value_of_t("min_maxq").unwrap());
     cfg.set_min_qual(m.value_of_t("min_qual").unwrap());
-    cfg.set_threads_per_reader(m.value_of_t("threads_per_reader").unwrap());
+    cfg.set_threads_per_reader(threads_per_reader);
     cfg.set_bam_rec_thread_buffer(m.value_of_t("bam_rec_thread_buffer").unwrap());
+    cfg.set_non_index_buffer_size(m.value_of_t("non_index_buffer_size").unwrap());
     if let Some(s) = reference {
         cfg.set_reference(s)
     }
@@ -275,5 +295,5 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions)> {
     if let Some(s) = m.value_of("dir") {
         cfg.set_dir(s)
     }
-    Ok((cfg, PathBuf::from(input), regions))
+    Ok((cfg, PathBuf::from(input), regions, metadata))
 }

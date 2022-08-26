@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, rc::Rc};
+use std::{collections::HashMap, path::Path};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use r_htslib::{
@@ -567,7 +567,7 @@ pub fn read_input_mt(
         brec_buf.push(BamRec::new()?)
     }
 
-    let block_size = 256;
+    let block_size = cfg.non_index_buffer_size();
     let mut task_blocks: Vec<Vec<ReadHandlerData>> = (0..n_tasks)
         .map(|_| Vec::with_capacity(block_size))
         .collect();
@@ -690,90 +690,6 @@ pub fn read_input_mt(
             tx_vec[ix]
                 .send(tb)
                 .expect("Error sending read to read handler");
-        }
-    }
-    stats_tx.send(st).expect("Error sending Stats to collector");
-    Ok(())
-}
-
-// Read in BAM records from non-indexed file without multithreading
-pub fn read_input(
-    cfg: &Config,
-    in_file: &Path,
-    regions: &Regions,
-    stats_tx: Sender<Stats>,
-) -> anyhow::Result<()> {
-    let mut st = Stats::new();
-
-    let mut chash = HashMap::new();
-    for (ctg, regv) in regions.iter() {
-        let mut cv = Vec::with_capacity(regv.len());
-        for reg in regv {
-            let mut cov = Coverage::new();
-            cov.reset(reg.start(), reg.end().unwrap(), reg.mappability());
-            cv.push(cov);
-        }
-        chash.insert(Rc::clone(ctg), cv);
-    }
-
-    let mut pair_warning = true;
-    let min_mapq = cfg.min_mapq().min(255) as u8;
-    let min_qual = cfg.min_qual().min(255) as u8;
-
-    let mut hts = input::open_input(in_file, true, cfg.reference(), cfg.threads_per_reader())?;
-    let mut rec = BamRec::new()?;
-
-    loop {
-        // Get next read if it exists
-        if !rec.read(&mut hts)? {
-            break;
-        }
-
-        let flag = rec.flag();
-        let chk_flg = |fg| (flag & fg) != 0;
-
-        if chk_flg(BAM_FUNMAP) {
-            st.incr(StatType::Unmapped);
-            st.incr_n(StatType::TotalBases, rec.l_qseq() as usize);
-            st.incr(StatType::Reads);
-        } else if let Some(ctg) =
-            regions.tid2ctg(rec.tid().expect("Missing contig for mapped read"))
-        {
-            let rvec = regions.ctg_regions(ctg).expect("Unknown contig");
-            // chash is created from regions so if the above line passes the following can not fail
-            let cvec = chash.get_mut(ctg).unwrap();
-
-            let x = rec.pos().expect("Missing position for mapped read") + 1;
-            let y = rec.endpos() + 1;
-            let regs = regions::find_overlapping_regions(rvec, x, y);
-            if !regs.is_empty() {
-                if chk_flg(BAM_FPAIRED) && !pair_warning {
-                    warn!("Paired reads founds");
-                    pair_warning = true;
-                }
-                update_flag_stats(flag, &mut st);
-                if !chk_flg(BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP) {
-                    if !chk_flg(BAM_FSUPPLEMENTARY) {
-                        let rl = rec.l_qseq() as usize;
-                        process_primary_read(&mut rec, &mut st, rl);
-                    }
-                    if rec.qual() >= min_mapq {
-                        // Check coverage
-                        let seq_qual = rec
-                            .get_seq_qual()
-                            .expect("Error getting sequence and qualities");
-                        for reg_ix in regs.iter() {
-                            process_coverage(&mut rec, &seq_qual, &mut cvec[*reg_ix], min_qual)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    debug!("Updating stats");
-    for cvec in chash.values() {
-        for cov in cvec.iter() {
-            cov.update_stats(&mut st)
         }
     }
     stats_tx.send(st).expect("Error sending Stats to collector");

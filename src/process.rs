@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -8,20 +9,49 @@ use std::{
 
 use anyhow::Context;
 use crossbeam_channel::{bounded, unbounded};
+use indexmap::IndexMap;
+
+use serde::{
+    self,
+    ser::{SerializeMap, Serializer},
+    Serialize,
+};
 
 use crate::{
     collect,
     config::Config,
     read,
     regions::{Regions, TaskRegion},
+    stats::Stats,
 };
 
-pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<()> {
-    // Create output dir if necessary
-    if let Some(dir) = cfg.dir() {
-        fs::create_dir_all(dir).with_context(|| "Could not create output directory")?;
+fn serialize_im<S, K, V>(im: &IndexMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    K: Display + Serialize,
+    V: Display + Serialize,
+{
+    let l: usize = im.len();
+    let mut map = serializer.serialize_map(Some(l))?;
+    for (key, val) in im.iter() {
+        map.serialize_entry(key, val)?;
     }
+    map.end()
+}
 
+#[derive(Serialize)]
+struct Output {
+    #[serde(serialize_with = "serialize_im")]
+    metadata: IndexMap<&'static str, String>,
+    stats: Stats,
+}
+
+pub fn process(
+    cfg: Config,
+    input: PathBuf,
+    regions: Regions,
+    mut metadata: IndexMap<&'static str, String>,
+) -> anyhow::Result<()> {
     let nreg = regions.len();
     let n_tasks = cfg.n_tasks().min(nreg);
     let nthr = cfg.threads_per_reader();
@@ -32,9 +62,16 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
     let cfg_ref = &cfg;
     let ifile: &Path = input.as_ref();
 
+    metadata.insert("indexed", format!("{}", cfg.indexed()));
+    metadata.insert("n_tasks", format!("{}", n_tasks));
+    metadata.insert("threads_per_reader", format!("{}", nthr));
+    let min_qual = cfg.min_qual().min(255) as u8;
+    let min_mapq = cfg.min_mapq().min(255) as u8;
+    metadata.insert("min_qual", format!("{}", min_qual));
+    metadata.insert("min_mapq", format!("{}", min_mapq));
+
     let st = if cfg.indexed() {
         debug!("Processing input with index");
-
         // Create thread scope so that we can share references across threads
         thread::scope(|scope| {
             let (collector_tx, collector_rx) = bounded(n_tasks * 4);
@@ -79,7 +116,7 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             // Wait for collector to finish
             collector_task.join()
         })
-    } else if n_tasks > 1 {
+    } else {
         debug!("Processing input without index using {} tasks", n_tasks);
 
         // First we assign regions to each task
@@ -177,24 +214,14 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
             // Wait for collector to finish
             collector_task.join()
         })
-    } else {
-        debug!("Processing input without index");
-
-        thread::scope(|scope| {
-            // Spawn handling tasks
-
-            let (collector_tx, collector_rx) = bounded(n_tasks * 4);
-            let collector_task = scope.spawn(|| collect::collector(collector_rx));
-
-            // Read from input
-            read::read_input(cfg_ref, ifile, &regions, collector_tx)
-                .expect("Error opening input file");
-
-            // Wait for collector to finish
-            collector_task.join()
-        })
     }
     .expect("Processing error");
+
+    // Create output dir if necessary
+    if let Some(dir) = cfg.dir() {
+        fs::create_dir_all(dir).with_context(|| "Could not create output directory")?;
+        metadata.insert("output_dir", dir.to_string_lossy().to_string());
+    }
 
     // Create results file name
     let fname = {
@@ -204,11 +231,39 @@ pub fn process(cfg: Config, input: PathBuf, regions: Regions) -> anyhow::Result<
         d
     };
 
+    metadata.insert("json_output_name", fname.to_string_lossy().to_string());
+
     // Open output file
     let mut wrt = fs::File::create(&fname)
         .with_context(|| format!("Could not open output file {}", fname.display()))?;
 
+    // Get elapsed time
+    if let Some(mut t) = cfg.elapsed().map(|d| d.as_secs_f64()) {
+        let mut s = String::new();
+        if t > 24.0 * 3600.0 {
+            let days = (t / (24.0 * 3600.0)).floor() as u32;
+            s.push_str(format!("{}d", days).as_str());
+            t -= (days as f64) * 24.0 * 3600.0;
+        }
+        if t > 3600.0 {
+            let hours = (t / 3600.0).floor() as u32;
+            s.push_str(format!("{}h", hours).as_str());
+            t -= (hours as f64) * 3600.0;
+        }
+        if t > 60.0 {
+            let mins = (t / 60.0).floor() as u32;
+            s.push_str(format!("{}m", mins).as_str());
+            t -= (mins as f64) * 60.0;
+        }
+        s.push_str(format!("{:.3}s", t).as_str());
+        metadata.insert("elapsed_time", s);
+    }
+
+    let out = Output {
+        metadata,
+        stats: st,
+    };
     // Generate JSON
-    serde_json::to_writer_pretty(&mut wrt, &st)
+    serde_json::to_writer_pretty(&mut wrt, &out)
         .with_context(|| "Could not write out JSON stats file")
 }
