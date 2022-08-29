@@ -62,7 +62,8 @@ chr6:40000000 or chr6:40,000,000 will select everything on chromosome 6 from 40 
 of the chromosome (note the optional commas), and chr14:135,000,000-150,000,000 selects
 the region on chromosome 14 between 135 and 150 Mbases.  Multiple --region options can be given to
 specify multiple genomic regions, however if a large set of regions is required then the --regions option
-allows the specification of a BED file containing the desired regions.
+allows the specification of a BED file containing the desired regions.  Note that the supplied BED file can
+be compressed and will be decompressed transparently as long as a suitable tool is present in the users PATH.
 
 The --mappability option also specifies a BED file with regions to consider, but there are
 subtle differences between the --mappability and --regions options.  The --mappability regions list
@@ -107,27 +108,30 @@ It would be much better in this case to generate the index before running ont_al
 
 ont_align_stats has several command line options for controlling its operation.
 
-| Short | Long         | Description                                                | Default           |
-|-------|--------------|------------------------------------------------------------|-------------------|
- | q     | min-maxq     | Minimum MAXQ for calculating mapping statistics            | 10                |
-| b     | min-qual     | Minimum base quality for coverage statistics               | 10                |
-| r     | region       | Genomic region                                             |                   |
-| R     | regions      | BED file containing genomic regions                        |                   |
+| Short | Long           | Description                                                | Default           |
+|-------|----------------|------------------------------------------------------------|-------------------|
+ | q     | min-maxq       | Minimum MAXQ for calculating mapping statistics            | 10                |
+| b     | min-qual       | Minimum base quality for coverage statistics               | 10                |
+| r     | region         | Genomic region                                             |                   |
+| R     | regions        | BED file containing genomic regions                        |                   |
 |||||
-| d     | dir          | Set output directory                                       | Current directory |
-| P     | prefix       | Set prefix for output files                                | ont_align_stats   |
+| d     | dir            | Set output directory                                       | Current directory |
+| p     | prefix         | Set prefix for output files                                | ont_align_stats   |
+| z     | compress-gzip  | Compress output file with gzip                             |                   |
+| j     | compress-bzip2 | Compress output file with bzip2                            |                   |
+| x     | compress-xz    | Compress output file with xz                               |                   |
 |||||
-| m     | mappability  | Mappability BED file                                       | 1                 |
-| T     | reference    | Reference FASTA file (for CRAM files)                      | 1                 |
+| m     | mappability    | Mappability BED file                                       | 1                 |
+| T     | reference      | Reference FASTA file (for CRAM files)                      | 1                 |
 |||||
-| n     | n-tasks      | Number of parallel read tasks                              | 1                 |
-| t     | hts-threads  | Number of additional threads for hts readers               | 1                 |
+| n     | n-tasks        | Number of parallel read tasks                              | 1                 |
+| t     | hts-threads    | Number of additional threads for hts readers               | 1                 |
 |||||
-| l     | log-level    | Set log level [none, error, warn, info, debug, trace]      | info              |
-|       | timestamp    | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
-|       | quiet        | Suppress all logging                                       |                   |
-| h     | help         | Print help information                                     |                   |
-| V     | version      | Print version information                                  |                   |
+| l     | log-level      | Set log level [none, error, warn, info, debug, trace]      | info              |
+|       | timestamp      | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
+|       | quiet          | Suppress all logging                                       |                   |
+| h     | help           | Print help information                                     |                   |
+| V     | version        | Print version information                                  |                   |
 
 ## <a name="changes"></a>Output
 The main output file from ont_align_stats is a JSON file containing at the root level a map with (currently) two elements, metadata and stats.
@@ -144,6 +148,7 @@ These are described below:
 
 ## <a name="changes"></a>Changes
 
+ - 0.9.0 Switch prefix short option to 'p' from 'P'.  Add output compression options
  - 0.8.0 Switch to using thread pools for hts readers for indexed reading when the file is opened multiple times.  In this way the threads are shared across tasks so the total number of threads is reduced.
  - 0.7.0 Change output so there is a metadata section and the stats section
  - 0.6.1 Optimizations, particularly for the non-indexed case

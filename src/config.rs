@@ -3,11 +3,26 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Copy, Clone, Debug)]
+pub enum CompressOpt {
+    None,
+    Gzip,
+    Bzip2,
+    Xz,
+}
+
+impl Default for CompressOpt {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 #[derive(Default)]
 pub struct Config {
     // Output Options
     prefix: Option<String>,
     dir: Option<PathBuf>,
+    compress: CompressOpt,
 
     // Read Select options
     // Minimum MAPQ for a mapping to be considered for the coverage stats
@@ -82,6 +97,12 @@ impl Config {
     }
     pub fn set_non_index_buffer_size(&mut self, x: usize) {
         self.non_index_buffer_size = x
+    }
+    pub fn set_compress(&mut self, x: CompressOpt) {
+        self.compress = x
+    }
+    pub fn compress(&self) -> CompressOpt {
+        self.compress
     }
     pub fn n_tasks(&self) -> usize {
         self.n_tasks

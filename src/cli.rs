@@ -7,14 +7,14 @@ use std::{
     time::Instant,
 };
 
-use crate::config::Config;
+use crate::config::{CompressOpt, Config};
 use crate::input::open_input;
 use crate::mappability::Mappability;
 use crate::metadata::collect_starting_metadata;
 use crate::regions::Regions;
 
 use anyhow::{Context, Error};
-use clap::{crate_version, Arg, ArgMatches, Command};
+use clap::{crate_version, Arg, ArgGroup, ArgMatches, Command};
 use indexmap::IndexMap;
 
 /// Set up stderrlog using options from clap::ArgMatches
@@ -160,11 +160,29 @@ fn cli_model() -> ArgMatches {
         .next_help_heading("Output")
         .arg(
             Arg::new("prefix")
-                .short('P').long("prefix")
+                .short('p').long("prefix")
                 .takes_value(true).value_name("STRING")
                 .default_value("ont_align_stats")
                 .help("Set prefix for output files")
         )
+        .arg(
+            Arg::new("compress_gzip")
+                .short('z').long("compress-gzip")
+                .help("Compress output file with gzip")
+        )
+        .arg(
+            Arg::new("compress_bzip2")
+                .short('j').long("compress-bzip2")
+                .help("Compress output file with bzip2")
+        )
+        .arg(
+            Arg::new("compress_xz")
+                .short('x').long("compress-xz")
+                .help("Compress output file with xz")
+        )
+        .group(ArgGroup::new("compress")
+            .args(&["compress_gzip", "compress_bzip2", "compress_xz"])
+            .multiple(false))
         .arg(
             Arg::new("dir")
                 .short('d').long("dir")
@@ -275,6 +293,13 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     cfg.set_hts_threads(hts_threads);
     cfg.set_bam_rec_thread_buffer(m.value_of_t("bam_rec_thread_buffer").unwrap());
     cfg.set_non_index_buffer_size(m.value_of_t("non_index_buffer_size").unwrap());
+    if m.contains_id("compress_gzip") {
+        cfg.set_compress(CompressOpt::Gzip)
+    } else if m.contains_id("compress_bzip2") {
+        cfg.set_compress(CompressOpt::Bzip2)
+    } else if m.contains_id("compress_xz") {
+        cfg.set_compress(CompressOpt::Xz)
+    }
     if let Some(s) = reference {
         cfg.set_reference(s)
     }

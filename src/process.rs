@@ -8,6 +8,8 @@ use std::{
 };
 
 use anyhow::Context;
+use compress_io::compress::CompressIo;
+use compress_io::compress_type::CompressType;
 use crossbeam_channel::{bounded, unbounded};
 use indexmap::IndexMap;
 use r_htslib::HtsThreadPool;
@@ -20,7 +22,7 @@ use serde::{
 
 use crate::{
     collect,
-    config::Config,
+    config::{CompressOpt, Config},
     read,
     regions::{Regions, TaskRegion},
     stats::Stats,
@@ -238,8 +240,23 @@ pub fn process(
     metadata.insert("json_output_name", fname.to_string_lossy().to_string());
 
     // Open output file
-    let mut wrt = fs::File::create(&fname)
-        .with_context(|| format!("Could not open output file {}", fname.display()))?;
+
+    // Set compress type
+    let ct = match cfg.compress() {
+        CompressOpt::None => CompressType::NoFilter,
+        CompressOpt::Gzip => CompressType::Gzip,
+        CompressOpt::Bzip2 => CompressType::Bzip2,
+        CompressOpt::Xz => CompressType::Xz,
+    };
+
+    let mut wrt = CompressIo::new()
+        .path(fname)
+        .ctype(ct)
+        .bufwriter()
+        .with_context(|| "Could not open output file")?;
+
+    //    let mut wrt = fs::File::create(&fname)
+    //        .with_context(|| format!("Could not open output file {}", fname.display()))?;
 
     // Get elapsed time
     if let Some(mut t) = cfg.elapsed().map(|d| d.as_secs_f64()) {
