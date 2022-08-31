@@ -92,7 +92,7 @@ fn cli_model() -> ArgMatches {
             Arg::new("max_block_size")
                 .long("max-block-size").hidden(true)
                 .takes_value(true).value_name("INT")
-                .default_value("5000000")
+                .default_value("25000000")
         )
         .arg(
             Arg::new("non_index_buffer_size")

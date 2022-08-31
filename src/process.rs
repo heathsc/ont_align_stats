@@ -12,7 +12,7 @@ use compress_io::compress::CompressIo;
 use compress_io::compress_type::CompressType;
 use crossbeam_channel::{bounded, unbounded};
 use indexmap::IndexMap;
-use r_htslib::HtsThreadPool;
+use r_htslib::{Faidx, HtsThreadPool};
 
 use serde::{
     self,
@@ -64,6 +64,18 @@ pub fn process(
     );
     let cfg_ref = &cfg;
     let ifile: &Path = input.as_ref();
+    let faidx = if let Some(p) = cfg.reference() {
+        trace!("Try to open reference {} and load index", p.display());
+        let f = Faidx::load(p);
+        if !f.is_err() {
+            trace!("Reference index loaded successfully");
+        } else {
+            warn!("Could not load feference index");
+        }
+        f.ok()
+    } else {
+        None
+    };
 
     metadata.insert("indexed", format!("{}", cfg.indexed()));
     metadata.insert("n_tasks", format!("{}", n_tasks));
@@ -96,7 +108,7 @@ pub fn process(
 
             // Send unmapped reads to readers
             region_tx
-                .send((String::from('*'), 0, None))
+                .send((String::from('*'), 0, None, None))
                 .expect("Error sending region message");
 
             // Send mapped regions to readers
@@ -108,8 +120,22 @@ pub fn process(
                 };
                 for (ix, reg) in regv.iter().enumerate() {
                     let s = format!("{}{}", ctg_str, reg);
+                    trace!("Sending region {} for processing", s);
+                    // Load sequence if reference file has been supplied
+                    let seq = if let Some(f) = &faidx {
+                        trace!("Loading sequence for region");
+                        let f = f.fetch_seq(ctg, reg.start(), reg.end());
+                        if f.is_ok() {
+                            trace!("Sequence loaded successfully");
+                        } else {
+                            warn!("Error loading sequence for region {}", s);
+                        }
+                        f.ok()
+                    } else {
+                        None
+                    };
                     region_tx
-                        .send((s, ix, Some(regv)))
+                        .send((s, ix, Some(regv), seq))
                         .expect("Error sending region message");
                 }
             }
@@ -140,22 +166,42 @@ pub fn process(
 
         // Allocate regions to tasks
         // Tasks are given contiguous sets of regions to decrease
-        // the chance that a read spans regions handled by different tasks
+        // the chance that a read spans regions handled by different tasks.
+        // If a reference has been supplied then we also read in the reference for
+        // each region
         let mut region_hash = HashMap::new();
         let mut remainder = total_size;
         let mut task_ix = 0;
         let mut current_total = 0;
         let mut task_regions = Vec::with_capacity(n_tasks);
         let mut task_region_list = Vec::new();
+        if faidx.is_some() {
+            debug!("Allocating regions to tasks and loading in reference sequence")
+        } else {
+            debug!("Allocating regions to tasks")
+        }
         for (ctg, regv) in regions.iter() {
             let mut v = Vec::with_capacity(regv.len());
             let mut tv = Vec::new();
             for (reg_ix, reg) in regv.iter().enumerate() {
                 let l = reg.length().unwrap();
                 let avail = n_tasks - task_ix;
+                let seq = if let Some(f) = faidx.as_ref() {
+                    trace!("Loading sequence for region");
+                    let f = f.fetch_seq(ctg, reg.start(), reg.end());
+                    if f.is_ok() {
+                        trace!("Sequence loaded successfully");
+                    } else {
+                        warn!("Error loading sequence for region {}:{}", ctg, reg);
+                    }
+                    f.ok()
+                } else {
+                    None
+                };
                 if avail == 1 || current_total + l < remainder / avail {
                     current_total += l;
-                    tv.push((reg, reg_ix))
+
+                    tv.push((reg, reg_ix, seq))
                 } else {
                     debug!("Task {}, total region length {}", task_ix, current_total);
                     if !tv.is_empty() {
@@ -168,7 +214,7 @@ pub fn process(
                     task_ix += 1;
                     remainder -= current_total;
                     current_total = l;
-                    tv.push((reg, reg_ix));
+                    tv.push((reg, reg_ix, seq));
                 }
                 v.push(task_ix)
             }

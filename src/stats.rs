@@ -60,6 +60,21 @@ where
     map.end()
 }
 
+fn serialize_mm_vec<S>(ct: &[usize], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let l: usize = ct.iter().fold(0, |s, v| if *v > 0 { s + 1 } else { s });
+    let mut map = serializer.serialize_map(Some(l))?;
+    for (ix, val) in ct.iter().enumerate() {
+        if *val > 0 {
+            let key = format!("{:.1}", (ix as f64) / 10.0);
+            map.serialize_entry(&key, &val)?;
+        }
+    }
+    map.end()
+}
+
 fn serialize_cov<S>(ct: &BTreeMap<usize, usize>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -83,6 +98,12 @@ pub struct Stats {
     counts: [usize; 10],
     #[serde(serialize_with = "serialize_vec")]
     mapped_pctg: Vec<usize>,
+    #[serde(serialize_with = "serialize_vec")]
+    base_qual_pctg: Vec<usize>,
+    #[serde(serialize_with = "serialize_mm_vec")]
+    mismatch_pctg: Vec<usize>,
+    #[serde(serialize_with = "serialize_vec")]
+    indel_pctg: Vec<usize>,
     #[serde(serialize_with = "serialize_vec")]
     primary_mapq: Vec<usize>,
     read_len: BTreeMap<usize, usize>,
@@ -110,6 +131,9 @@ impl AddAssign for Stats {
     fn add_assign(&mut self, other: Self) {
         add_vec(&mut self.counts, &other.counts);
         add_vec(&mut self.mapped_pctg, &other.mapped_pctg);
+        add_vec(&mut self.base_qual_pctg, &other.base_qual_pctg);
+        add_vec(&mut self.mismatch_pctg, &other.mismatch_pctg);
+        add_vec(&mut self.indel_pctg, &other.indel_pctg);
         add_vec(&mut self.primary_mapq, &other.primary_mapq);
         add_btreemap(&mut self.read_len, &other.read_len);
         add_btreemap(&mut self.n_splits, &other.n_splits);
@@ -122,6 +146,9 @@ impl Stats {
         let mut st = Self::default();
         st.primary_mapq.resize(256, 0);
         st.mapped_pctg.resize(101, 0);
+        st.base_qual_pctg.resize(101, 0);
+        st.indel_pctg.resize(101, 0);
+        st.mismatch_pctg.resize(1001, 0);
         st
     }
 
@@ -137,6 +164,10 @@ impl Stats {
         self.primary_mapq[q as usize] += 1
     }
 
+    pub fn incr_baseq_pctg(&mut self, q: u8) {
+        self.base_qual_pctg[q as usize] += 1
+    }
+
     pub fn update_readlen_stats(&mut self, rl: usize, used: usize) {
         assert!(used <= rl);
         let p = (100.0 * (used as f64) / (rl as f64)).round() as usize;
@@ -144,6 +175,16 @@ impl Stats {
         self.counts[StatType::TotalBases as usize] += rl;
         self.counts[StatType::MappedBases as usize] += used;
         self.mapped_pctg[p] += 1
+    }
+
+    pub fn incr_mismatch_pctg(&mut self, p: f64) {
+        assert!((0.0..=1.0).contains(&p), "Illegal mismatch percentage");
+        self.mismatch_pctg[(p * 1000.0).round() as usize] += 1;
+    }
+
+    pub fn incr_indel_pctg(&mut self, p: f64) {
+        assert!((0.0..=1.0).contains(&p), "Illegal mismatch percentage");
+        self.indel_pctg[(p * 100.0).round() as usize] += 1;
     }
 
     pub fn incr_coverage(&mut self, cov: usize) {

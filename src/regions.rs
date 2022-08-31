@@ -11,6 +11,7 @@ use crate::mappability::Mappability;
 use anyhow::Context;
 use compress_io::compress;
 use lazy_static::lazy_static;
+use r_htslib::Sequence;
 use regex::{Regex, RegexSet};
 
 lazy_static! {
@@ -48,16 +49,15 @@ fn parse_range(s1: &str, s2: &str) -> Option<(usize, usize)> {
 fn parse_region_str(s: &str) -> Option<(&str, usize, Option<usize>)> {
     if let Some(cap) = RE_REGION1.captures(s).or_else(|| RE_REGION2.captures(s)) {
         match (cap.get(1), cap.get(2), cap.get(3)) {
-            (Some(c), None, None) => Some((c.as_str(), 0, None)),
+            (Some(c), None, None) => Some((c.as_str(), 1, None)),
             (Some(c), Some(p), None) => {
-                parse_usize_with_commas(p.as_str()).map(|x| (c.as_str(), x, None))
+                parse_usize_with_commas(p.as_str()).map(|x| (c.as_str(), x.max(1), None))
             }
             (Some(c), None, Some(q)) => {
-                parse_usize_with_commas(q.as_str()).map(|x| (c.as_str(), 0, Some(x)))
+                parse_usize_with_commas(q.as_str()).map(|x| (c.as_str(), 1, Some(x)))
             }
-            (Some(c), Some(p), Some(q)) => {
-                parse_range(p.as_str(), q.as_str()).map(|(x, y)| (c.as_str(), x, Some(y)))
-            }
+            (Some(c), Some(p), Some(q)) => parse_range(p.as_str(), q.as_str())
+                .map(|(x, y)| (c.as_str(), x.max(1), Some(y.max(1)))),
             _ => None,
         }
     } else {
@@ -466,11 +466,11 @@ pub fn find_overlapping_regions(rvec: &[Region], x: usize, y: usize) -> Vec<usiz
 // Copy of region information for a task
 pub struct TaskRegion<'a> {
     ctg: &'a str,
-    regions: Vec<(&'a Region, usize)>, // usize parameter gives index into list of regions for this contig
+    regions: Vec<(&'a Region, usize, Option<Sequence>)>, // usize parameter gives index into list of regions for this contig
 }
 
 impl<'a> TaskRegion<'a> {
-    pub fn new(ctg: &'a str, regions: Vec<(&'a Region, usize)>) -> Self {
+    pub fn new(ctg: &'a str, regions: Vec<(&'a Region, usize, Option<Sequence>)>) -> Self {
         Self { ctg, regions }
     }
 
@@ -478,7 +478,7 @@ impl<'a> TaskRegion<'a> {
         self.ctg
     }
 
-    pub fn regions(&self) -> &[(&Region, usize)] {
+    pub fn regions(&self) -> &[(&Region, usize, Option<Sequence>)] {
         &self.regions
     }
 }

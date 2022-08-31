@@ -2,8 +2,8 @@ use std::{collections::HashMap, path::Path};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use r_htslib::{
-    BamRec, Cigar, CigarOp, HtsItrReader, HtsRead, HtsThreadPool, SeqQual, BAM_FDUP, BAM_FPAIRED,
-    BAM_FQCFAIL, BAM_FREVERSE, BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FUNMAP,
+    BamRec, Cigar, CigarOp, HtsItrReader, HtsRead, HtsThreadPool, SeqQual, Sequence, BAM_FDUP,
+    BAM_FPAIRED, BAM_FQCFAIL, BAM_FREVERSE, BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FUNMAP,
 };
 
 use crate::{
@@ -12,6 +12,17 @@ use crate::{
     regions::{self, Region, Regions, TaskRegion},
     stats::{StatType, Stats},
 };
+
+const BASE_TAB: [u8; 256] = [
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+];
 
 fn get_start_end(cigar: &Cigar, rev: bool, read_len: usize) -> Option<(usize, usize)> {
     let mut first = 0;
@@ -125,6 +136,8 @@ struct Coverage {
     start: usize,         // Start of region
     cov: Vec<u32>,        // Coverage
     map: Option<Vec<u8>>, // Mappability bit map
+    reference: Vec<u8>,   // Reference sequence
+    match_counts: [u32; 2],
 }
 
 impl Coverage {
@@ -138,11 +151,25 @@ impl Coverage {
         Self::default()
     }
 
-    fn reset(&mut self, start: usize, end: usize, mappability: Option<&Vec<[usize; 2]>>) {
+    fn reset(
+        &mut self,
+        start: usize,
+        end: usize,
+        mappability: Option<&Vec<[usize; 2]>>,
+        rf: Option<&[u8]>,
+    ) {
         let (len, mlen) = Self::_calc_lens(start, end);
         self.start = start;
         self.cov.clear();
         self.cov.resize(len, 0);
+        self.reference.clear();
+        self.match_counts = [0; 2];
+        if let Some(p) = rf {
+            self.reference.reserve(p.len());
+            for c in p {
+                self.reference.push(BASE_TAB[*c as usize])
+            }
+        }
         if let Some(map) = mappability {
             let m = if let Some(m) = self.map.as_mut() {
                 m.clear();
@@ -165,34 +192,70 @@ impl Coverage {
         }
     }
 
-    fn inc(&mut self, x: usize) {
+    fn inc(&mut self, x: usize, q: u8, pass: bool, st: &mut Stats) {
         if x >= self.start {
             let i = x - self.start;
             if let Some(c) = self.cov.get_mut(i) {
-                if let Some(m) = self.map.as_mut() {
-                    let ix = i >> 3;
-                    let iy = i & 7;
-                    if (m[ix] & (1 << iy)) != 0 {
+                if pass {
+                    if let Some(m) = self.map.as_mut() {
+                        let ix = i >> 3;
+                        let iy = i & 7;
+                        if (m[ix] & (1 << iy)) != 0 {
+                            *c += 1
+                        }
+                    } else {
                         *c += 1
                     }
-                } else {
-                    *c += 1
                 }
+                st.incr_baseq_pctg(q);
             }
+        }
+    }
+
+    fn inc_with_mm(&mut self, x: usize, base: u8, q: u8, pass: bool, st: &mut Stats) {
+        if x >= self.start {
+            let i = x - self.start;
+            if let Some(c) = self.cov.get_mut(i) {
+                if pass {
+                    if let Some(m) = self.map.as_mut() {
+                        let ix = i >> 3;
+                        let iy = i & 7;
+                        if (m[ix] & (1 << iy)) != 0 {
+                            *c += 1
+                        }
+                    } else {
+                        *c += 1
+                    }
+                    let rf = self.reference[i];
+                    if rf < 4 {
+                        self.match_counts[if rf == base { 0 } else { 1 }] += 1
+                    }
+                }
+                st.incr_baseq_pctg(q);
+            }
+        }
+    }
+
+    fn mismatch_pctg(&self) -> Option<f64> {
+        let t = self.match_counts[0] + self.match_counts[1];
+        if t > 0 {
+            Some((self.match_counts[1] as f64) / (t as f64))
+        } else {
+            None
         }
     }
 
     fn update_stats(&self, st: &mut Stats) {
         if let Some(map) = self.map.as_ref() {
             let mut it = self.cov.iter();
-            for mut m in map.iter().copied() {
+            for mut mask in map.iter().copied() {
                 let mut n = 8;
-                while m != 0 {
+                while mask != 0 {
                     if let Some(c) = it.next().map(|x| *x as usize) {
-                        if (m & 1) == 1 {
+                        if (mask & 1) == 1 {
                             st.incr_coverage(c)
                         }
-                        m >>= 1;
+                        mask >>= 1;
                         n -= 1;
                     } else {
                         break;
@@ -285,31 +348,74 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     }
 }
 
-fn process_coverage(rec: &mut BamRec, seq_qual: &SeqQual, cov: &mut Coverage, min_qual: u8) {
+fn process_coverage(
+    rec: &mut BamRec,
+    seq_qual: &SeqQual,
+    cov: &mut Coverage,
+    min_qual: u8,
+    st: &mut Stats,
+) {
     if let Some(cigar) = rec.cigar() {
         let mut x = rec.pos().expect("No start position for mapped read") + 1;
         let mut sq = seq_qual.iter().map(|x| (*x & 3, *x >> 2));
+
+        let mut indel_counts = [0; 2];
+        let (start, end) = (cov.start, cov.start + cov.cov.len());
         for elem in cigar.iter() {
             let l = elem.op_len() as usize;
             assert!(l > 0, "Zero length cigar element");
+            let l1 = if x >= end || x + l < start {
+                0
+            } else {
+                let x1 = x.max(start);
+                let y1 = (x + l).min(end);
+                y1 - x1
+            };
             match elem.op() {
                 CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
-                    for _ in 0..l {
-                        let (_, q) = sq
-                            .next()
-                            .expect("Mismatch between Cigar and sequence length");
-                        if q >= min_qual {
-                            cov.inc(x)
+                    if cov.reference.is_empty() {
+                        for _ in 0..l {
+                            let (_, q) = sq
+                                .next()
+                                .expect("Mismatch between Cigar and sequence length");
+
+                            cov.inc(x, q, q >= min_qual, st);
+                            x += 1;
                         }
-                        x += 1;
+                    } else {
+                        for _ in 0..l {
+                            let (c, q) = sq
+                                .next()
+                                .expect("Mismatch between Cigar and sequence length");
+                            cov.inc_with_mm(x, c, q, q >= min_qual, st);
+                            x += 1;
+                        }
                     }
+                    indel_counts[0] += l1;
                 }
-                CigarOp::SoftClip | CigarOp::Ins => {
+                CigarOp::SoftClip => {
                     sq.nth(l - 1);
                 }
-                CigarOp::Del => x += l,
+                CigarOp::Ins => {
+                    sq.nth(l - 1);
+                    indel_counts[1] += l1;
+                }
+                CigarOp::Del => {
+                    x += l;
+                    indel_counts[1] += l1;
+                }
                 _ => (),
             }
+        }
+
+        if let Some(p) = cov.mismatch_pctg() {
+            st.incr_mismatch_pctg(p);
+            cov.match_counts = [0; 2];
+        }
+        let t = indel_counts[0] + indel_counts[1];
+        if t > 0 {
+            let p = (indel_counts[1] as f64) / (t as f64);
+            st.incr_indel_pctg(p);
         }
     }
 }
@@ -342,7 +448,7 @@ pub fn reader(
     ix: usize,
     in_file: &Path,
     tx: Sender<Stats>,
-    rx: Receiver<(String, usize, Option<&Vec<Region>>)>,
+    rx: Receiver<(String, usize, Option<&Vec<Region>>, Option<Sequence>)>,
     tpool: Option<&HtsThreadPool>,
 ) {
     debug!("Starting reader thread {}", ix);
@@ -353,19 +459,23 @@ pub fn reader(
     let min_mapq = cfg.min_mapq().min(255) as u8;
 
     let mut cov = Coverage::new();
+
     let mut rec = BamRec::new().expect("Could not allocate new Bam Record");
     let mut st = Stats::new();
     let mut pair_warning = false;
-    while let Ok((reg, reg_ix, rvec)) = rx.recv() {
+    while let Ok((reg, reg_ix, rvec, seq)) = rx.recv() {
         let mappability = rvec.and_then(|v| v[reg_ix].mappability());
         let rlist = hts.make_region_list(&[&reg]);
         assert_eq!(rlist.len(), 1, "Empty region list for {}", reg);
         let begin = (rlist[0].begin() + 1) as usize;
         let end = rlist[0].end() as usize;
         if end >= begin {
-            cov.reset(begin, end, mappability)
+            let rf = seq.as_ref().map(|s| {
+                s.get_seq(begin, end)
+                    .expect("Error getting reference sequence for region")
+            });
+            cov.reset(begin, end, mappability, rf);
         }
-
         let mut rdr: HtsItrReader<BamRec> = hts.itr_reader(&rlist);
         while rdr.read(&mut rec).expect("Error reading from input file") {
             let flag = rec.flag();
@@ -408,7 +518,7 @@ pub fn reader(
                     let sq = rec
                         .get_seq_qual()
                         .expect("Error getting sequence and qualities");
-                    process_coverage(&mut rec, &sq, &mut cov, min_qual)
+                    process_coverage(&mut rec, &sq, &mut cov, min_qual, &mut st);
                 }
             }
         }
@@ -451,9 +561,13 @@ pub fn read_handler(
     let mut st = Stats::new();
     let mut cov_vec = Vec::new();
     for tr in region_list.iter() {
-        for (reg, _) in tr.regions() {
+        for (reg, _, seq) in tr.regions() {
+            let rf = seq.as_ref().map(|s| {
+                s.get_seq(reg.start().max(1), reg.end().unwrap())
+                    .expect("Error getting reference sequence for region")
+            });
             let mut cov = Coverage::new();
-            cov.reset(reg.start(), reg.end().unwrap(), reg.mappability());
+            cov.reset(reg.start(), reg.end().unwrap(), reg.mappability(), rf);
             cov_vec.push(cov);
         }
     }
@@ -504,7 +618,7 @@ pub fn read_handler(
                 let seq_qual = rec.get_seq_qual().expect("No sequence/quality data");
                 loop {
                     // Check coverage
-                    process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual);
+                    process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual, &mut st);
 
                     // Remove next region if exists
                     if let Some((task_ix, r_ix, tx, t_info)) = task_info.map(|mut v| {
@@ -577,7 +691,7 @@ pub fn read_input_mt(
     for (task_ix, tv) in task_regions.iter().enumerate() {
         let mut tix: usize = 0;
         for tr in tv.iter() {
-            for (_, reg_ix) in tr.regions() {
+            for (_, reg_ix, _) in tr.regions() {
                 let tx = tx_vec[task_ix].clone();
                 reg_task_hash.insert((tr.ctg(), *reg_ix), (task_ix, tix, tx));
                 tix += 1;

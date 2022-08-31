@@ -122,7 +122,7 @@ ont_align_stats has several command line options for controlling its operation.
 | x     | compress-xz    | Compress output file with xz                               |                   |
 |||||
 | m     | mappability    | Mappability BED file                                       | 1                 |
-| T     | reference      | Reference FASTA file (for CRAM files)                      | 1                 |
+| T     | reference      | Reference FASTA file                                       | 1                 |
 |||||
 | n     | n-tasks        | Number of parallel read tasks                              | 1                 |
 | t     | hts-threads    | Number of additional threads for hts readers               | 1                 |
@@ -148,6 +148,7 @@ These are described below:
 
 ## <a name="changes"></a>Changes
 
+ - 0.10.0 Add collection of percentage of indels and base quality distribution.  If reference sequence is supplied, collect % of mismatches in bases that pass the filters.
  - 0.9.0 Switch prefix short option to 'p' from 'P'.  Add output compression options
  - 0.8.0 Switch to using thread pools for hts readers for indexed reading when the file is opened multiple times.  In this way the threads are shared across tasks so the total number of threads is reduced.
  - 0.7.0 Change output so there is a metadata section and the stats section
