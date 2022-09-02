@@ -1,6 +1,13 @@
 # ont_align_stats
 
-Utility for calculating mapping statistics for (mostly) ONT reads from indexed BAM files.
+Utility for calculating mapping statistics from 
+indexed BAM files.  Although intended for ONT reads, ont_align_stats will work for
+both long and short read sequence data from paired or non-paired libraries.  It will work both with both 
+sorted & indexed BAMS and with unsorted unindexed BAMS (although these require more memory to process).
+The principal objective of ont_align_stats is to calculate the coverage distribution, but many additional statistics are
+also collected.  There is the ability to restrict the calculations to particular genomic regions, and to
+only consider the uniquely mappable subset of the genome.
+
 
 - [Introduction](#intro)
 - [Installation](#install)
@@ -136,18 +143,49 @@ ont_align_stats has several command line options for controlling its operation.
 ## <a name="changes"></a>Output
 The main output file from ont_align_stats is a JSON file containing at the root level a map with (currently) two elements, metadata and stats.
 The metadata element is a map with a number of key:value pairs giving information about the command, the machine used, option selected etc. 
-The stats element is also a map with the following elements: counts, mapped_pctg, primary_mapq, read_len, n_splits, and coverage.
+The stats element is also a map with the following elements (some of which may be missing for a
+particular analysis): counts, mapped_pctg, base_qual_pctg, 
+primary_mapq, mismatch_pctg, indel_pctg, read_len, n_splits, coverage and template_len.
+
 These are described below:
 
- - counts: set of raw counts of either mappings, reads or bases.
+ - counts: set of raw counts of either mappings, reads or bases.  Note that counts that are zero will be omitted from the JSON file.  
+In particular, all the counts relating to paired reads will not be present for a non-paired library.
+   * Mappings: Total number of mappings
+   * Reads: Total number of reads
+   * Unmapped: Number of unmapped reads
+   * Reversed: Number of reads on the - strand
+   * Secondary: Number of secondary mappings
+   * QcFail: Number of reads marked as failing QC
+   * Duplicate: Number of reads marked as duplicate
+   * TotalBases: Total number of bases
+   * MappedBases: Total number of mapped bases
+   * TotalPairs: Total number of paired reads
+   * CorrectPairs: Number of correct pairs (i.e., with bit 2 set in the SAM flag)
+   * MateUnmapped: Read pairs with only one read mapped
+   * DifferentContigs: Read pairs mapping to different contigs
+   * BadTemplateLength: Template length outside of allowed range (determined during mapping)
+   * ConvergentPair: Read pair on different strands with the reads facing towards each other (regular pair)
+   * DivergentPair: Read pair on different strands with the reads facing away from each other
+   * OrientationFF: Both read 1 and read 2 on the + strand
+   * OrientationFR: Read 1 on + strand, read 2 on - strand
+   * OrientationRF: Read 1 on - strand, read 2 on + strand
+   * OrientationRR: Both read 1 and read 2 on the - strand
+   * IllegalOrientation: Invalid combination of orientation flags (aligner bug)
+   * OverlapBases: Number of bases overlapping between the two reads of a pair (not counted for the coverage)
  - mapped_pctg: distribution of the number of reads where the given % of the read is mapped (i.e., ignoring clipped regions)
+ - base_qual_pctg: distribution of number ofbases with the given base quality scores
  - primary_mapq: distribution of the number of primary mappings with the given MAPQ value.
+ - mismatch_pctg (only if an indexed reference is supplied): distribution of the number of reads with a given mismatch %
+ - indel_pctg: distribution of the number of reads with a given % of indel bases
  - read_len: distribution of the number of reads with a given read length.
  - n_splits: distribution of the number of reads with a given number of split mappings (MAPQ > 0).
  - coverage: map with the number of mappable bases with a given coverage as well as the % of mappable bases with at least the given coverage.
+ - template_len (paired libraries only): distribution of the number of properly paired fragments (templates) with the given length.
 
 ## <a name="changes"></a>Changes
 
+ - 0.11.0 Extend to paired end libraries.  Add many pair related statistics.
  - 0.10.0 Add collection of percentage of indels and base quality distribution.  If reference sequence is supplied, collect % of mismatches in bases that pass the filters.
  - 0.9.0 Switch prefix short option to 'p' from 'P'.  Add output compression options
  - 0.8.0 Switch to using thread pools for hts readers for indexed reading when the file is opened multiple times.  In this way the threads are shared across tasks so the total number of threads is reduced.

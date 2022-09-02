@@ -14,12 +14,26 @@ pub enum StatType {
     Secondary,
     QcFail,
     Duplicate,
-    Paired,
     TotalBases,
     MappedBases,
+    TotalPairs,
+    CorrectPairs,
+    MateUnmapped,
+    DifferentContigs,
+    BadTemplateLength,
+    ConvergentPair,
+    DivergentPair,
+    OrientationFF,
+    OrientationFR,
+    OrientationRF,
+    OrientationRR,
+    IllegalOrientation,
+    OverlapBases,
 }
 
-const STAT_NAMES: [&str; 10] = [
+const N_COUNTS: usize = (StatType::OverlapBases as usize) + 1;
+
+const STAT_NAMES: [&str; N_COUNTS] = [
     "Mappings",
     "Reads",
     "Unmapped",
@@ -27,9 +41,21 @@ const STAT_NAMES: [&str; 10] = [
     "Secondary",
     "QcFail",
     "Duplicate",
-    "Paired",
     "TotalBases",
     "MappedBases",
+    "TotalPairs",
+    "CorrectPairs",
+    "MateUnmapped",
+    "DifferentContigs",
+    "BadTemplateLength",
+    "ConvergentPair",
+    "DivergentPair",
+    "OrientationFF",
+    "OrientationFR",
+    "OrientationRF",
+    "OrientationRR",
+    "IllegalOrientation",
+    "OverlapBases",
 ];
 
 fn serialize_counts<S>(ct: &[usize], serializer: S) -> Result<S::Ok, S::Error>
@@ -95,12 +121,13 @@ where
 #[derive(Default, Debug, Serialize)]
 pub struct Stats {
     #[serde(serialize_with = "serialize_counts")]
-    counts: [usize; 10],
+    counts: [usize; N_COUNTS],
     #[serde(serialize_with = "serialize_vec")]
     mapped_pctg: Vec<usize>,
     #[serde(serialize_with = "serialize_vec")]
     base_qual_pctg: Vec<usize>,
     #[serde(serialize_with = "serialize_mm_vec")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     mismatch_pctg: Vec<usize>,
     #[serde(serialize_with = "serialize_vec")]
     indel_pctg: Vec<usize>,
@@ -110,6 +137,8 @@ pub struct Stats {
     n_splits: BTreeMap<usize, usize>,
     #[serde(serialize_with = "serialize_cov")]
     coverage: BTreeMap<usize, usize>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    template_len: BTreeMap<usize, usize>,
 }
 
 fn add_vec<T: AddAssign + Copy>(v1: &mut [T], v2: &[T]) {
@@ -138,6 +167,7 @@ impl AddAssign for Stats {
         add_btreemap(&mut self.read_len, &other.read_len);
         add_btreemap(&mut self.n_splits, &other.n_splits);
         add_btreemap(&mut self.coverage, &other.coverage);
+        add_btreemap(&mut self.template_len, &other.template_len);
     }
 }
 
@@ -180,6 +210,10 @@ impl Stats {
     pub fn incr_mismatch_pctg(&mut self, p: f64) {
         assert!((0.0..=1.0).contains(&p), "Illegal mismatch percentage");
         self.mismatch_pctg[(p * 1000.0).round() as usize] += 1;
+    }
+
+    pub fn incr_template_len(&mut self, x: usize) {
+        *self.template_len.entry(x).or_insert(0) += 1;
     }
 
     pub fn incr_indel_pctg(&mut self, p: f64) {

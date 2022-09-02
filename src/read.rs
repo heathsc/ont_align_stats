@@ -3,7 +3,8 @@ use std::{collections::HashMap, path::Path};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use r_htslib::{
     BamRec, Cigar, CigarOp, HtsItrReader, HtsRead, HtsThreadPool, SeqQual, Sequence, BAM_FDUP,
-    BAM_FPAIRED, BAM_FQCFAIL, BAM_FREVERSE, BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FUNMAP,
+    BAM_FMUNMAP, BAM_FPAIRED, BAM_FPROPER_PAIR, BAM_FQCFAIL, BAM_FREVERSE, BAM_FSECONDARY,
+    BAM_FSUPPLEMENTARY, BAM_FUNMAP,
 };
 
 use crate::{
@@ -273,17 +274,29 @@ impl Coverage {
     }
 }
 
+// Collect read level stats that should only be performed on the primary mapping for a read
+// (i.e., not a secondary or supplementary mapping)
+//
+// Because a read can overlap multiple regions, this function is only run on the first (lowest coordinate)
+// region overlapping this read.
+//
+// We want to calculate the number of bases that are 'used' (i.e. that are not skips or insertions)
+// from the read. Since a read can have supplementary alignments, we lok for the SA tag to get the
+// same information on any other alignments for the read.  This requires making a list of all alignments
+// for the read, sorting on start order, and then removing any overlaps to ensure bases are only counted once
 fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     st.incr_mapq(rec.qual());
     if let Some(cigar) = rec.cigar() {
         // Find start and end points of aligned bases on read
         let reverse = (rec.flag() & BAM_FREVERSE) != 0;
         if let Some((start, stop)) = get_start_end(&cigar, reverse, read_len) {
+            // Make list of all alignments from this read, starting with the primary alignment
             let mut v = vec![(start, stop)];
-            // Look for supplementary mappings for this read
+
+            // Look for supplementary mappings (int the SA tag) for this read
             if let Some(Ok(sa)) = rec.get_tag("SA", 'Z').map(std::str::from_utf8) {
                 trace!("Found SA tag for read {}", rec.qname().unwrap());
-                // Collect the start and end points of all mappings for this read
+                // Collect the start and end points of all supplementary mappings for this read
                 for s in sa.split(';') {
                     if s.len() < 2 {
                         continue;
@@ -318,9 +331,12 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
                         )
                     }
                 }
-                // Sort by starting point
+
+                // Sort mappings  by starting point (on read)
                 v.sort_unstable_by_key(|(x, _)| *x);
             }
+
+            // This is a least 1 as we include the primary alignment
             let n_splits = v.len();
 
             // Get total used bases excluding any overlaps
@@ -348,6 +364,14 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     }
 }
 
+// Collect coverage and other stats (mismatches, indel counts etc.) that require looking at each base.
+// Counts ae only performed for the bases that fall within the current region (as defined in cov)
+// to avoid double counting if a read spans multiple regions.
+//
+// For paired reads where the proper pair flag is set, we identify the left most member of the pair (i.e., where
+// the template length is positive) and for this read we only collect coverage stats up to the start position
+// of the mate (on the reference).  Any bases that fall after that are counted as overlapping bases and do not
+// contribute to the coverage
 fn process_coverage(
     rec: &mut BamRec,
     seq_qual: &SeqQual,
@@ -361,16 +385,39 @@ fn process_coverage(
 
         let mut indel_counts = [0; 2];
         let (start, end) = (cov.start, cov.start + cov.cov.len());
+
+        // Is this the left most member of a properly paired read pair?
+        let end1 = if (rec.flag() & (BAM_FPAIRED | BAM_FPROPER_PAIR))
+            == (BAM_FPAIRED | BAM_FPROPER_PAIR)
+            && rec.template_len() > 0
+        {
+            rec.mpos()
+                .expect("Missing mate position for correctly paired read")
+                .min(end)
+        } else {
+            end
+        };
+
         for elem in cigar.iter() {
+            // If we are already past the end of the region we can stop processing the cigar
+            if x >= end {
+                break;
+            }
+
+            // Get length of current cigar op
             let l = elem.op_len() as usize;
             assert!(l > 0, "Zero length cigar element");
-            let l1 = if x >= end || x + l < start {
+
+            // Calculate how much of current op overlaps the region
+            let l1 = if x >= end1 || x + l < start {
                 0
             } else {
                 let x1 = x.max(start);
-                let y1 = (x + l).min(end);
+                let y1 = (x + l).min(end1);
                 y1 - x1
             };
+
+            // Process cigar op
             match elem.op() {
                 CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
                     if cov.reference.is_empty() {
@@ -378,8 +425,11 @@ fn process_coverage(
                             let (_, q) = sq
                                 .next()
                                 .expect("Mismatch between Cigar and sequence length");
-
-                            cov.inc(x, q, q >= min_qual, st);
+                            if x < end1 {
+                                cov.inc(x, q, q >= min_qual, st)
+                            } else if x < end {
+                                st.incr(StatType::OverlapBases)
+                            }
                             x += 1;
                         }
                     } else {
@@ -387,7 +437,11 @@ fn process_coverage(
                             let (c, q) = sq
                                 .next()
                                 .expect("Mismatch between Cigar and sequence length");
-                            cov.inc_with_mm(x, c, q, q >= min_qual, st);
+                            if x < end1 {
+                                cov.inc_with_mm(x, c, q, q >= min_qual, st)
+                            } else if x < end {
+                                st.incr(StatType::OverlapBases)
+                            }
                             x += 1;
                         }
                     }
@@ -402,12 +456,17 @@ fn process_coverage(
                 }
                 CigarOp::Del => {
                     x += l;
-                    indel_counts[1] += l1;
+                    // For deletions we do not advance along the reference so if l1 > 0 then
+                    // we score the entire deletion
+                    if l1 > 0 {
+                        indel_counts[1] += l
+                    }
                 }
                 _ => (),
             }
         }
 
+        // Update stats
         if let Some(p) = cov.mismatch_pctg() {
             st.incr_mismatch_pctg(p);
             cov.match_counts = [0; 2];
@@ -420,7 +479,7 @@ fn process_coverage(
     }
 }
 
-fn update_flag_stats(flag: u16, st: &mut Stats) {
+fn update_flag_stats(flag: u16, pair_same_ctg: bool, tmpl_neg: bool, st: &mut Stats) {
     let chk_flg = |fg| (flag & fg) != 0;
     st.incr(StatType::Mappings);
     if chk_flg(BAM_FREVERSE) {
@@ -430,14 +489,54 @@ fn update_flag_stats(flag: u16, st: &mut Stats) {
         st.incr(StatType::Secondary)
     } else if !chk_flg(BAM_FSUPPLEMENTARY) {
         st.incr(StatType::Reads);
-        if chk_flg(BAM_FPAIRED) {
-            st.incr(StatType::Paired)
-        }
         if chk_flg(BAM_FDUP) {
             st.incr(StatType::Duplicate)
         }
         if chk_flg(BAM_FQCFAIL) {
             st.incr(StatType::QcFail)
+        }
+        if chk_flg(BAM_FPAIRED) {
+            st.incr(StatType::TotalPairs);
+            if chk_flg(BAM_FPROPER_PAIR) {
+                st.incr(StatType::CorrectPairs);
+            }
+            if chk_flg(BAM_FMUNMAP) {
+                st.incr(StatType::MateUnmapped)
+            } else if pair_same_ctg {
+                let orientation = flag & 0xf0;
+                st.incr(match orientation {
+                    0x50 | 0xa0 => StatType::OrientationRF,
+                    0x60 | 0x90 => StatType::OrientationFR,
+                    0x40 | 0x80 => StatType::OrientationFF,
+                    0x70 | 0xb0 => StatType::OrientationRR,
+                    _ => StatType::IllegalOrientation,
+                });
+                match orientation {
+                    0x50 | 0x90 => {
+                        if tmpl_neg {
+                            if !chk_flg(BAM_FPROPER_PAIR) {
+                                st.incr(StatType::BadTemplateLength)
+                            }
+                            st.incr(StatType::ConvergentPair)
+                        } else {
+                            st.incr(StatType::DivergentPair)
+                        }
+                    }
+                    0x60 | 0xa0 => {
+                        if tmpl_neg {
+                            st.incr(StatType::DivergentPair)
+                        } else {
+                            if !chk_flg(BAM_FPROPER_PAIR) {
+                                st.incr(StatType::BadTemplateLength)
+                            }
+                            st.incr(StatType::ConvergentPair)
+                        }
+                    }
+                    _ => (),
+                }
+            } else {
+                st.incr(StatType::DifferentContigs)
+            }
         }
     }
 }
@@ -462,7 +561,6 @@ pub fn reader(
 
     let mut rec = BamRec::new().expect("Could not allocate new Bam Record");
     let mut st = Stats::new();
-    let mut pair_warning = false;
     while let Ok((reg, reg_ix, rvec, seq)) = rx.recv() {
         let mappability = rvec.and_then(|v| v[reg_ix].mappability());
         let rlist = hts.make_region_list(&[&reg]);
@@ -481,10 +579,14 @@ pub fn reader(
             let flag = rec.flag();
             let chk_flg = |fg| (flag & fg) != 0;
 
+            let paired = chk_flg(BAM_FPAIRED);
             if chk_flg(BAM_FUNMAP) {
                 st.incr(StatType::Unmapped);
                 st.incr_n(StatType::TotalBases, rec.l_qseq() as usize);
                 st.incr(StatType::Reads);
+                if paired {
+                    st.incr(StatType::TotalPairs)
+                }
             } else {
                 let rvec = rvec.expect("Empty region vec for mapped region");
                 // Check if mapping could appear in another region
@@ -500,11 +602,18 @@ pub fn reader(
                     true
                 };
                 if primary_region {
-                    if chk_flg(BAM_FPAIRED) && !pair_warning {
-                        warn!("Paired reads founds");
-                        pair_warning = true;
-                    }
-                    update_flag_stats(flag, &mut st);
+                    let tid = rec.tid().expect("Invalid contig ID for mapped read");
+                    let same_contig = rec.mtid().map(|x| x == tid).unwrap_or(false);
+                    let tmpl_neg = if paired {
+                        let tlen = rec.template_len();
+                        if tlen >= 0 && chk_flg(BAM_FPROPER_PAIR) {
+                            st.incr_template_len(tlen as usize)
+                        }
+                        tlen < 0
+                    } else {
+                        false
+                    };
+                    update_flag_stats(flag, same_contig, tmpl_neg, &mut st);
                     if !chk_flg(
                         BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP | BAM_FSUPPLEMENTARY,
                     ) {
@@ -725,10 +834,14 @@ pub fn read_input_mt(
         let flag = rec.flag();
         let chk_flg = |fg| (flag & fg) != 0;
 
+        let paired = chk_flg(BAM_FPAIRED);
         if chk_flg(BAM_FUNMAP) {
             st.incr(StatType::Unmapped);
             st.incr_n(StatType::TotalBases, rec.l_qseq() as usize);
             st.incr(StatType::Reads);
+            if paired {
+                st.incr(StatType::TotalPairs)
+            }
             brec_buf.push(rec);
         } else if let Some(ctg) =
             regions.tid2ctg(rec.tid().expect("Missing contig for mapped read"))
@@ -745,7 +858,18 @@ pub fn read_input_mt(
                     warn!("Paired reads founds");
                     pair_warning = true;
                 }
-                update_flag_stats(flag, &mut st);
+                let tid = rec.tid().expect("Invalid contig ID for mapped read");
+                let same_contig = rec.mtid().map(|x| x == tid).unwrap_or(false);
+                let tmpl_neg = if paired {
+                    let tlen = rec.template_len();
+                    if tlen >= 0 && chk_flg(BAM_FPROPER_PAIR) {
+                        st.incr_template_len(tlen as usize)
+                    }
+                    tlen < 0
+                } else {
+                    false
+                };
+                update_flag_stats(flag, same_contig, tmpl_neg, &mut st);
                 if !chk_flg(BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP) {
                     let mut v: Vec<_> = regs
                         .iter()
