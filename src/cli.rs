@@ -129,6 +129,13 @@ fn cli_model() -> ArgMatches {
                 .takes_value(true).value_name("PATH")
                 .help("Path to reference fasta file")
         )
+        .arg(
+            Arg::new("no_bisulfite")
+                .long("no-bisulfite")
+                .alias("no-bisulphite")
+                .hidden(true)
+                .help("Do not check for bisulfite tags in BAM records and process accordingly")
+        )
         .next_help_heading("Filtering")
         .arg(
             Arg::new("region")
@@ -176,12 +183,17 @@ fn cli_model() -> ArgMatches {
                 .help("Compress output file with bzip2")
         )
         .arg(
+            Arg::new("compress_zstd")
+                .short('Z').long("compress-zstd")
+                .help("Compress output file with zstd")
+        )
+        .arg(
             Arg::new("compress_xz")
                 .short('x').long("compress-xz")
                 .help("Compress output file with xz")
         )
         .group(ArgGroup::new("compress")
-            .args(&["compress_gzip", "compress_bzip2", "compress_xz"])
+            .args(&["compress_gzip", "compress_bzip2", "compress_zstd", "compress_xz"])
             .multiple(false))
         .arg(
             Arg::new("dir")
@@ -293,10 +305,13 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     cfg.set_hts_threads(hts_threads);
     cfg.set_bam_rec_thread_buffer(m.value_of_t("bam_rec_thread_buffer").unwrap());
     cfg.set_non_index_buffer_size(m.value_of_t("non_index_buffer_size").unwrap());
+    cfg.set_bisulfite(!m.contains_id("no_bisulfite"));
     if m.contains_id("compress_gzip") {
         cfg.set_compress(CompressOpt::Gzip)
     } else if m.contains_id("compress_bzip2") {
         cfg.set_compress(CompressOpt::Bzip2)
+    } else if m.contains_id("compress_zstd") {
+        cfg.set_compress(CompressOpt::Zstd)
     } else if m.contains_id("compress_xz") {
         cfg.set_compress(CompressOpt::Xz)
     }

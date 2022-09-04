@@ -1,9 +1,14 @@
+pub mod bisulfite;
+mod coverage;
+mod handle_sa_tag;
+mod utils;
+
 use std::{collections::HashMap, path::Path};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use r_htslib::{
-    BamRec, Cigar, CigarOp, HtsItrReader, HtsRead, HtsThreadPool, SeqQual, Sequence, BAM_FDUP,
-    BAM_FMUNMAP, BAM_FPAIRED, BAM_FPROPER_PAIR, BAM_FQCFAIL, BAM_FREVERSE, BAM_FSECONDARY,
+    BamRec, HtsItrReader, HtsRead, HtsThreadPool, Sequence, BAM_FDUP, BAM_FMUNMAP, BAM_FPAIRED,
+    BAM_FPROPER_PAIR, BAM_FQCFAIL, BAM_FREAD1, BAM_FREAD2, BAM_FREVERSE, BAM_FSECONDARY,
     BAM_FSUPPLEMENTARY, BAM_FUNMAP,
 };
 
@@ -11,279 +16,55 @@ use crate::{
     config::Config,
     input,
     regions::{self, Region, Regions, TaskRegion},
-    stats::{StatType, Stats},
+    stats::{ReadType, StatType, Stats},
 };
 
-const BASE_TAB: [u8; 256] = [
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 0, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-];
+use coverage::{process_coverage, Coverage};
+use handle_sa_tag::*;
+use utils::*;
 
-fn get_start_end(cigar: &Cigar, rev: bool, read_len: usize) -> Option<(usize, usize)> {
-    let mut first = 0;
-    let mut last = 0;
-    let mut started = false;
-    let mut x = 0;
-    for elem in cigar.iter() {
-        match elem.op() {
-            CigarOp::HardClip | CigarOp::SoftClip | CigarOp::Ins => x += elem.op_len() as usize,
-            CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
-                if !started {
-                    started = true;
-                    first = x;
-                }
-                x += elem.op_len() as usize;
-                last = x;
-            }
-            _ => {}
-        }
-    }
-    adjust_start_end(first, last, x, rev, read_len)
-}
-
-fn adjust_start_end(
-    first: usize,
-    last: usize,
-    x: usize,
-    rev: bool,
-    read_len: usize,
-) -> Option<(usize, usize)> {
-    if read_len != x || last <= first {
-        None
-    } else if rev {
-        Some((read_len - last, read_len - 1 - first))
-    } else {
-        Some((first, last - 1))
-    }
-}
-
-fn sa_get_start_end(it: &mut SaTagIter, rev: bool, read_len: usize) -> Option<(usize, usize)> {
-    let mut first = 0;
-    let mut last = 0;
-    let mut started = false;
-    let mut x = 0;
-    for (c, l) in it {
-        match c {
-            'H' | 'S' | 'I' => x += l,
-            'M' | '=' | 'X' => {
-                if !started {
-                    started = true;
-                    first = x;
-                }
-                x += l;
-                last = x;
-            }
-            _ => {}
-        }
-    }
-    adjust_start_end(first, last, x, rev, read_len)
-}
-
-struct SaTagIter<'a> {
-    tag: &'a str,
-    done: bool,
-}
-
-impl<'a> SaTagIter<'a> {
-    fn new(tag: &'a str) -> Self {
-        Self { tag, done: false }
-    }
-}
-
-impl<'a> Iterator for SaTagIter<'a> {
-    type Item = (char, usize);
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-        let it = self.tag.char_indices();
-        let mut ix = None;
-        let mut ch = None;
-        for (iy, c) in it {
-            if !c.is_numeric() {
-                ch = Some((iy, c));
-                break;
-            }
-            ix = Some(iy)
-        }
-        if let Some(ix) = ix {
-            if let Ok(l) = self.tag[0..=ix].parse::<usize>() {
-                if let Some((iy, c)) = ch {
-                    if iy + 1 >= self.tag.len() {
-                        self.done = true
-                    }
-                    self.tag = &self.tag[iy + 1..];
-                    Some((c, l))
+fn get_read_type(rec: &BamRec) -> Option<ReadType> {
+    let fg = rec.flag();
+    if (fg & BAM_FUNMAP) == 0 {
+        let reverse = (fg & BAM_FREVERSE) != 0;
+        if (fg & BAM_FPAIRED) == 0 {
+            // Non-paired
+            Some(if reverse {
+                ReadType::Reverse
+            } else {
+                ReadType::Forwards
+            })
+        } else {
+            // paired record
+            match fg & (BAM_FREAD1 | BAM_FREAD2) {
+                BAM_FREAD1 => Some(if reverse {
+                    ReadType::ReverseRead1
                 } else {
-                    None
-                }
-            } else {
-                None
+                    ReadType::ForwardsRead1
+                }),
+                BAM_FREAD2 => Some(if reverse {
+                    ReadType::ReverseRead2
+                } else {
+                    ReadType::ForwardsRead2
+                }),
+                _ => None,
             }
-        } else {
-            None
         }
+    } else {
+        None
     }
 }
 
-#[derive(Default)]
-struct Coverage {
-    start: usize,         // Start of region
-    cov: Vec<u32>,        // Coverage
-    map: Option<Vec<u8>>, // Mappability bit map
-    reference: Vec<u8>,   // Reference sequence
-    match_counts: [u32; 2],
-}
-
-impl Coverage {
-    fn _calc_lens(start: usize, end: usize) -> (usize, usize) {
-        assert!(end >= start);
-        let l = end + 1 - start;
-        (l, (l + 7) >> 3)
-    }
-
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn reset(
-        &mut self,
-        start: usize,
-        end: usize,
-        mappability: Option<&Vec<[usize; 2]>>,
-        rf: Option<&[u8]>,
-    ) {
-        let (len, mlen) = Self::_calc_lens(start, end);
-        self.start = start;
-        self.cov.clear();
-        self.cov.resize(len, 0);
-        self.reference.clear();
-        self.match_counts = [0; 2];
-        if let Some(p) = rf {
-            self.reference.reserve(p.len());
-            for c in p {
-                self.reference.push(BASE_TAB[*c as usize])
-            }
-        }
-        if let Some(map) = mappability {
-            let m = if let Some(m) = self.map.as_mut() {
-                m.clear();
-                m.resize(mlen, 0);
-                m
-            } else {
-                self.map = Some(vec![0; mlen]);
-                self.map.as_mut().unwrap()
-            };
-            for mv in map.iter() {
-                assert!(mv[0] >= start);
-                for x in (mv[0]..=mv[1]).map(|i| i - start) {
-                    let ix = x >> 3;
-                    let iy = x & 7;
-                    m[ix] |= 1 << iy;
-                }
-            }
-        } else {
-            self.map = None
-        }
-    }
-
-    fn inc(&mut self, x: usize, q: u8, pass: bool, st: &mut Stats) {
-        if x >= self.start {
-            let i = x - self.start;
-            if let Some(c) = self.cov.get_mut(i) {
-                if pass {
-                    if let Some(m) = self.map.as_mut() {
-                        let ix = i >> 3;
-                        let iy = i & 7;
-                        if (m[ix] & (1 << iy)) != 0 {
-                            *c += 1
-                        }
-                    } else {
-                        *c += 1
-                    }
-                }
-                st.incr_baseq_pctg(q);
-            }
-        }
-    }
-
-    fn inc_with_mm(&mut self, x: usize, base: u8, q: u8, pass: bool, st: &mut Stats) {
-        if x >= self.start {
-            let i = x - self.start;
-            if let Some(c) = self.cov.get_mut(i) {
-                if pass {
-                    if let Some(m) = self.map.as_mut() {
-                        let ix = i >> 3;
-                        let iy = i & 7;
-                        if (m[ix] & (1 << iy)) != 0 {
-                            *c += 1
-                        }
-                    } else {
-                        *c += 1
-                    }
-                    let rf = self.reference[i];
-                    if rf < 4 {
-                        self.match_counts[if rf == base { 0 } else { 1 }] += 1
-                    }
-                }
-                st.incr_baseq_pctg(q);
-            }
-        }
-    }
-
-    fn mismatch_pctg(&self) -> Option<f64> {
-        let t = self.match_counts[0] + self.match_counts[1];
-        if t > 0 {
-            Some((self.match_counts[1] as f64) / (t as f64))
-        } else {
-            None
-        }
-    }
-
-    fn update_stats(&self, st: &mut Stats) {
-        if let Some(map) = self.map.as_ref() {
-            let mut it = self.cov.iter();
-            for mut mask in map.iter().copied() {
-                let mut n = 8;
-                while mask != 0 {
-                    if let Some(c) = it.next().map(|x| *x as usize) {
-                        if (mask & 1) == 1 {
-                            st.incr_coverage(c)
-                        }
-                        mask >>= 1;
-                        n -= 1;
-                    } else {
-                        break;
-                    }
-                }
-                if n > 0 {
-                    it.nth(n - 1);
-                }
-            }
-        } else {
-            for c in self.cov.iter().map(|x| *x as usize) {
-                st.incr_coverage(c)
-            }
-        }
-    }
-}
-
-// Collect read level stats that should only be performed on the primary mapping for a read
-// (i.e., not a secondary or supplementary mapping)
-//
-// Because a read can overlap multiple regions, this function is only run on the first (lowest coordinate)
-// region overlapping this read.
-//
-// We want to calculate the number of bases that are 'used' (i.e. that are not skips or insertions)
-// from the read. Since a read can have supplementary alignments, we lok for the SA tag to get the
-// same information on any other alignments for the read.  This requires making a list of all alignments
-// for the read, sorting on start order, and then removing any overlaps to ensure bases are only counted once
+/// Collect read level stats that should only be performed on the primary mapping for a read
+/// (i.e., not a secondary or supplementary mapping)
+///
+/// Because a read can overlap multiple regions, this function is only run on the first (lowest coordinate)
+/// region overlapping this read.
+///
+/// We want to calculate the number of bases that are 'used' (i.e. that are not skips or insertions)
+/// from the read. Since a read can have supplementary alignments, we lok for the SA tag to get the
+/// same information on any other alignments for the read.  This requires making a list of all alignments
+/// for the read, sorting on start order, and then removing any overlaps to ensure bases are only counted once
 fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
     st.incr_mapq(rec.qual());
     if let Some(cigar) = rec.cigar() {
@@ -294,47 +75,9 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
             let mut v = vec![(start, stop)];
 
             // Look for supplementary mappings (int the SA tag) for this read
-            if let Some(Ok(sa)) = rec.get_tag("SA", 'Z').map(std::str::from_utf8) {
-                trace!("Found SA tag for read {}", rec.qname().unwrap());
-                // Collect the start and end points of all supplementary mappings for this read
-                for s in sa.split(';') {
-                    if s.len() < 2 {
-                        continue;
-                    }
-                    let fd: Vec<_> = s.split(',').collect();
-                    if fd.len() == 6 {
-                        if let Some(rev) = match fd[2] {
-                            "+" => Some(false),
-                            "-" => Some(true),
-                            _ => {
-                                warn!("Illegal SA tag {} - strand not + or -", s);
-                                None
-                            }
-                        } {
-                            let mut it = SaTagIter::new(fd[3]);
-                            if let Some((a, b)) = sa_get_start_end(&mut it, rev, read_len) {
-                                v.push((a, b))
-                            } else {
-                                warn!(
-                                    "Illegal SA Tag {} for read {} (wrong size)",
-                                    fd[3],
-                                    rec.qname().unwrap()
-                                )
-                            }
-                        }
-                    } else {
-                        warn!(
-                            "Illegal SA tag {} (wrong number of fields {} instead of 6) >{}<",
-                            s,
-                            fd.len(),
-                            sa
-                        )
-                    }
-                }
-
-                // Sort mappings  by starting point (on read)
-                v.sort_unstable_by_key(|(x, _)| *x);
-            }
+            // Add start,end points (on read) of supplementary mappings to v
+            // On return v is sorted on starting position
+            process_sa_tag(rec, read_len, &mut v);
 
             // This is a least 1 as we include the primary alignment
             let n_splits = v.len();
@@ -360,121 +103,6 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
             st.incr_n_splits(n_splits);
         } else {
             warn!("Illegal CIGAR for read {}", rec.qname().unwrap())
-        }
-    }
-}
-
-// Collect coverage and other stats (mismatches, indel counts etc.) that require looking at each base.
-// Counts ae only performed for the bases that fall within the current region (as defined in cov)
-// to avoid double counting if a read spans multiple regions.
-//
-// For paired reads where the proper pair flag is set, we identify the left most member of the pair (i.e., where
-// the template length is positive) and for this read we only collect coverage stats up to the start position
-// of the mate (on the reference).  Any bases that fall after that are counted as overlapping bases and do not
-// contribute to the coverage
-fn process_coverage(
-    rec: &mut BamRec,
-    seq_qual: &SeqQual,
-    cov: &mut Coverage,
-    min_qual: u8,
-    st: &mut Stats,
-) {
-    if let Some(cigar) = rec.cigar() {
-        let mut x = rec.pos().expect("No start position for mapped read") + 1;
-        let mut sq = seq_qual.iter().map(|x| (*x & 3, *x >> 2));
-
-        let mut indel_counts = [0; 2];
-        let (start, end) = (cov.start, cov.start + cov.cov.len());
-
-        // Is this the left most member of a properly paired read pair?
-        let end1 = if (rec.flag() & (BAM_FPAIRED | BAM_FPROPER_PAIR))
-            == (BAM_FPAIRED | BAM_FPROPER_PAIR)
-            && rec.template_len() > 0
-        {
-            rec.mpos()
-                .expect("Missing mate position for correctly paired read")
-                .min(end)
-        } else {
-            end
-        };
-
-        for elem in cigar.iter() {
-            // If we are already past the end of the region we can stop processing the cigar
-            if x >= end {
-                break;
-            }
-
-            // Get length of current cigar op
-            let l = elem.op_len() as usize;
-            assert!(l > 0, "Zero length cigar element");
-
-            // Calculate how much of current op overlaps the region
-            let l1 = if x >= end1 || x + l < start {
-                0
-            } else {
-                let x1 = x.max(start);
-                let y1 = (x + l).min(end1);
-                y1 - x1
-            };
-
-            // Process cigar op
-            match elem.op() {
-                CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
-                    if cov.reference.is_empty() {
-                        for _ in 0..l {
-                            let (_, q) = sq
-                                .next()
-                                .expect("Mismatch between Cigar and sequence length");
-                            if x < end1 {
-                                cov.inc(x, q, q >= min_qual, st)
-                            } else if x < end {
-                                st.incr(StatType::OverlapBases)
-                            }
-                            x += 1;
-                        }
-                    } else {
-                        for _ in 0..l {
-                            let (c, q) = sq
-                                .next()
-                                .expect("Mismatch between Cigar and sequence length");
-                            if x < end1 {
-                                cov.inc_with_mm(x, c, q, q >= min_qual, st)
-                            } else if x < end {
-                                st.incr(StatType::OverlapBases)
-                            }
-                            x += 1;
-                        }
-                    }
-                    indel_counts[0] += l1;
-                }
-                CigarOp::SoftClip => {
-                    sq.nth(l - 1);
-                }
-                CigarOp::Ins => {
-                    sq.nth(l - 1);
-                    indel_counts[1] += l1;
-                }
-                CigarOp::Del => {
-                    x += l;
-                    // For deletions we do not advance along the reference so if l1 > 0 then
-                    // we score the entire deletion
-                    if l1 > 0 {
-                        indel_counts[1] += l
-                    }
-                }
-                _ => (),
-            }
-        }
-
-        // Update stats
-        if let Some(p) = cov.mismatch_pctg() {
-            st.incr_mismatch_pctg(p);
-            cov.match_counts = [0; 2];
-        }
-        let t = indel_counts[0] + indel_counts[1];
-        if t > 0 {
-            let p = (indel_counts[1] as f64) / (t as f64);
-            st.incr_indel_pctg(p);
         }
     }
 }
@@ -627,7 +255,21 @@ pub fn reader(
                     let sq = rec
                         .get_seq_qual()
                         .expect("Error getting sequence and qualities");
-                    process_coverage(&mut rec, &sq, &mut cov, min_qual, &mut st);
+                    if let Some(rd_type) = get_read_type(&rec) {
+                        let bs_strand = if cfg.bisulfite() {
+                            bisulfite::get_bs_strand(&rec).map(|s| {
+                                st.incr_bisulfite_strand(s);
+                                s
+                            })
+                        } else {
+                            None
+                        };
+                        process_coverage(
+                            &mut rec, &sq, &mut cov, min_qual, rd_type, bs_strand, &mut st,
+                        );
+                    } else {
+                        warn!("Illegal read type")
+                    }
                 }
             }
         }
@@ -725,36 +367,56 @@ pub fn read_handler(
             };
             if rec.qual() >= min_mapq {
                 let seq_qual = rec.get_seq_qual().expect("No sequence/quality data");
-                loop {
-                    // Check coverage
-                    process_coverage(&mut rec, &seq_qual, &mut cov_vec[reg_ix], min_qual, &mut st);
+                if let Some(rd_type) = get_read_type(&rec) {
+                    let bs_strand = if cfg.bisulfite() {
+                        bisulfite::get_bs_strand(&rec).map(|s| {
+                            st.incr_bisulfite_strand(s);
+                            s
+                        })
+                    } else {
+                        None
+                    };
+                    loop {
+                        // Check coverage
+                        process_coverage(
+                            &mut rec,
+                            &seq_qual,
+                            &mut cov_vec[reg_ix],
+                            min_qual,
+                            rd_type,
+                            bs_strand,
+                            &mut st,
+                        );
 
-                    // Remove next region if exists
-                    if let Some((task_ix, r_ix, tx, t_info)) = task_info.map(|mut v| {
-                        let (task_ix, r_ix, tx) = v.pop().unwrap();
-                        if v.is_empty() {
-                            (task_ix, r_ix, tx, None)
+                        // Remove next region if exists
+                        if let Some((task_ix, r_ix, tx, t_info)) = task_info.map(|mut v| {
+                            let (task_ix, r_ix, tx) = v.pop().unwrap();
+                            if v.is_empty() {
+                                (task_ix, r_ix, tx, None)
+                            } else {
+                                (task_ix, r_ix, tx, Some(v))
+                            }
+                        }) {
+                            reg_ix = r_ix;
+                            task_info = t_info;
+                            if task_ix != ix {
+                                let rd = ReadHandlerData {
+                                    rec,
+                                    reg_ix,
+                                    primary_region: false,
+                                    task_info,
+                                };
+                                tx.send(vec![rd])
+                                    .expect("Error sending data to read handler");
+                                break;
+                            }
                         } else {
-                            (task_ix, r_ix, tx, Some(v))
-                        }
-                    }) {
-                        reg_ix = r_ix;
-                        task_info = t_info;
-                        if task_ix != ix {
-                            let rd = ReadHandlerData {
-                                rec,
-                                reg_ix,
-                                primary_region: false,
-                                task_info,
-                            };
-                            tx.send(vec![rd])
-                                .expect("Error sending data to read handler");
+                            brec_store = push_brec(rec, brec_store);
                             break;
                         }
-                    } else {
-                        brec_store = push_brec(rec, brec_store);
-                        break;
                     }
+                } else {
+                    brec_store = push_brec(rec, brec_store);
                 }
             } else {
                 brec_store = push_brec(rec, brec_store);

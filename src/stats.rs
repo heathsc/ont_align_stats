@@ -6,6 +6,8 @@ use serde::{
     Serialize,
 };
 
+use crate::read::bisulfite::BSStrand;
+
 pub enum StatType {
     Mappings = 0,
     Reads,
@@ -28,6 +30,8 @@ pub enum StatType {
     OrientationRF,
     OrientationRR,
     IllegalOrientation,
+    BisulfiteC2T,
+    BisulfiteG2A,
     OverlapBases,
 }
 
@@ -55,6 +59,8 @@ const STAT_NAMES: [&str; N_COUNTS] = [
     "OrientationRF",
     "OrientationRR",
     "IllegalOrientation",
+    "BisulfiteC2T",
+    "BisulfiteG2A",
     "OverlapBases",
 ];
 
@@ -118,25 +124,81 @@ where
     map.end()
 }
 
+#[derive(Default, Debug, Copy, Clone)]
+pub struct BaseComposition {
+    counts: [usize; 4],
+}
+
+impl AddAssign for BaseComposition {
+    fn add_assign(&mut self, other: Self) {
+        for (a, b) in self.counts.iter_mut().zip(other.counts.iter()) {
+            *a += b
+        }
+    }
+}
+
+impl Serialize for BaseComposition {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(4))?;
+        for (k, v) in ['A', 'C', 'G', 'T'].iter().zip(self.counts.iter()) {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+}
+
+impl BaseComposition {
+    pub fn incr_base(&mut self, b: u8) {
+        self.counts[b as usize] += 1;
+    }
+    pub fn complement(&mut self) {
+        self.counts.reverse();
+    }
+}
+
+#[derive(Debug, Serialize, Hash, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub enum ReadType {
+    Forwards,
+    Reverse,
+    ForwardsRead1,
+    ForwardsRead2,
+    ReverseRead1,
+    ReverseRead2,
+}
+
 #[derive(Default, Debug, Serialize)]
 pub struct Stats {
     #[serde(serialize_with = "serialize_counts")]
     counts: [usize; N_COUNTS],
+
+    composition: BTreeMap<ReadType, BaseComposition>,
+
     #[serde(serialize_with = "serialize_vec")]
     mapped_pctg: Vec<usize>,
+
     #[serde(serialize_with = "serialize_vec")]
     base_qual_pctg: Vec<usize>,
+
     #[serde(serialize_with = "serialize_mm_vec")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     mismatch_pctg: Vec<usize>,
+
     #[serde(serialize_with = "serialize_vec")]
     indel_pctg: Vec<usize>,
+
     #[serde(serialize_with = "serialize_vec")]
     primary_mapq: Vec<usize>,
+
     read_len: BTreeMap<usize, usize>,
+
     n_splits: BTreeMap<usize, usize>,
+
     #[serde(serialize_with = "serialize_cov")]
     coverage: BTreeMap<usize, usize>,
+
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     template_len: BTreeMap<usize, usize>,
 }
@@ -147,9 +209,9 @@ fn add_vec<T: AddAssign + Copy>(v1: &mut [T], v2: &[T]) {
     }
 }
 
-fn add_btreemap<T: AddAssign + Copy + Default>(
-    bt1: &mut BTreeMap<usize, T>,
-    vt2: &BTreeMap<usize, T>,
+fn add_btreemap<T: AddAssign + Copy + Default, K: Ord + Copy>(
+    bt1: &mut BTreeMap<K, T>,
+    vt2: &BTreeMap<K, T>,
 ) {
     for (x, y) in vt2.iter() {
         *bt1.entry(*x).or_insert(T::default()) += *y
@@ -168,6 +230,7 @@ impl AddAssign for Stats {
         add_btreemap(&mut self.n_splits, &other.n_splits);
         add_btreemap(&mut self.coverage, &other.coverage);
         add_btreemap(&mut self.template_len, &other.template_len);
+        add_btreemap(&mut self.composition, &other.composition);
     }
 }
 
@@ -184,6 +247,12 @@ impl Stats {
 
     pub fn incr(&mut self, ty: StatType) {
         self.counts[ty as usize] += 1
+    }
+
+    pub fn composition_get_mut(&mut self, bc: ReadType) -> &mut BaseComposition {
+        self.composition
+            .entry(bc)
+            .or_insert_with(BaseComposition::default)
     }
 
     pub fn incr_n(&mut self, ty: StatType, n: usize) {
@@ -227,6 +296,13 @@ impl Stats {
 
     pub fn incr_n_splits(&mut self, n_splits: usize) {
         *self.n_splits.entry(n_splits).or_insert(0) += 1;
+    }
+
+    pub fn incr_bisulfite_strand(&mut self, bs: BSStrand) {
+        match bs {
+            BSStrand::StrandC2T => self.incr(StatType::BisulfiteC2T),
+            BSStrand::StrandG2A => self.incr(StatType::BisulfiteG2A),
+        }
     }
 
     pub fn counts(&self, ty: StatType) -> usize {

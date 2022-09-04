@@ -172,7 +172,10 @@ In particular, all the counts relating to paired reads will not be present for a
    * OrientationRF: Read 1 on - strand, read 2 on + strand
    * OrientationRR: Both read 1 and read 2 on the - strand
    * IllegalOrientation: Invalid combination of orientation flags (aligner bug)
+   * BisulfiteC2T: Number of reads with an aligner tag indicating a C2T bisulfite converted read
+   * BisulfiteG2A: Number of reads with an aligner tag indicating a G2A bisulfite converted read
    * OverlapBases: Number of bases overlapping between the two reads of a pair (not counted for the coverage)
+ - composition: Base composition counts.  For non-paired reads these are separated by strand, and for paired reads they are separated by strand and read number (1 or 2)
  - mapped_pctg: distribution of the number of reads where the given % of the read is mapped (i.e., ignoring clipped regions)
  - base_qual_pctg: distribution of number ofbases with the given base quality scores
  - primary_mapq: distribution of the number of primary mappings with the given MAPQ value.
@@ -185,6 +188,7 @@ In particular, all the counts relating to paired reads will not be present for a
 
 ## <a name="changes"></a>Changes
 
+ - 0.12.0 Collect base composition info.  Check for bisulfite aligner tags and if found, handle mismatches taking this into account.
  - 0.11.0 Extend to paired end libraries.  Add many pair related statistics.
  - 0.10.0 Add collection of percentage of indels and base quality distribution.  If reference sequence is supplied, collect % of mismatches in bases that pass the filters.
  - 0.9.0 Switch prefix short option to 'p' from 'P'.  Add output compression options

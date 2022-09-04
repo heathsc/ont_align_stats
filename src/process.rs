@@ -292,6 +292,7 @@ pub fn process(
         CompressOpt::None => CompressType::NoFilter,
         CompressOpt::Gzip => CompressType::Gzip,
         CompressOpt::Bzip2 => CompressType::Bzip2,
+        CompressOpt::Zstd => CompressType::Zstd,
         CompressOpt::Xz => CompressType::Xz,
     };
 

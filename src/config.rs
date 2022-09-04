@@ -9,6 +9,7 @@ pub enum CompressOpt {
     Gzip,
     Bzip2,
     Xz,
+    Zstd,
 }
 
 impl Default for CompressOpt {
@@ -38,6 +39,9 @@ pub struct Config {
 
     // Is the file indexed?
     indexed: bool,
+
+    // Bisulfite mode
+    bisulfite: bool,
 
     // Reference path
     reference: Option<PathBuf>,
@@ -118,5 +122,11 @@ impl Config {
     }
     pub fn indexed(&self) -> bool {
         self.indexed
+    }
+    pub fn set_bisulfite(&mut self, x: bool) {
+        self.bisulfite = x
+    }
+    pub fn bisulfite(&self) -> bool {
+        self.bisulfite
     }
 }
