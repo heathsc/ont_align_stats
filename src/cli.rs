@@ -85,8 +85,7 @@ fn cli_model() -> ArgMatches {
             Arg::new("hts_threads")
                 .short('t').long("hts_threads")
                 .takes_value(true).value_name("INT")
-                .default_value("1")
-                .help("No. extra threads for hts reading")
+                .help("No. threads for hts reading [default: n_tasks]")
         )
         .arg(
             Arg::new("max_block_size")
@@ -265,7 +264,7 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
 
     // Threads arguments
     let n_tasks = m.value_of_t::<usize>("n_tasks").unwrap().max(1);
-    let hts_threads = m.value_of_t::<usize>("hts_threads").unwrap().max(n_tasks);
+    let hts_threads = m.value_of_t::<usize>("hts_threads").unwrap_or(n_tasks);
 
     // If multithreading split up regions into chunks of at most max_block_size
 
