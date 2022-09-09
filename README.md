@@ -91,9 +91,9 @@ Increased performance can be achieved using the multithreading options.  There a
 --n-tasks (or -n) and --hts-threads (or -t).  
 The --hts-threads option determines the number of additional threads for each hts file reading 
 task; libhts is used to read SAM/BAM/CRAM files, and can use multiple threads to increase the
-performance of the file reading/decoding.  The behaviour of the --n-tasks option depends on 
-whether the input file is indexed or not.  The --hts-threads and --n-tasks options are set to 
-0 and 1 respectively by default, so to obtain any
+performance of the file reading/decoding.  Note that the hts_threads are shared across all file reading tasks.  The behaviour of the --n-tasks option depends on 
+whether the input file is indexed or not.  The --n-tasks and --hts-threads  options are set to 
+1 and n_tasks respectively by default, so to obtain any
 benefit from multi-threading these options should be used.
 
 If the file is indexed and the requested number of tasks is >1
@@ -108,7 +108,8 @@ If the file is not indexed the input file will only be opened once irrespective 
 the --n-tasks setting; however the genomic regions to be considered will be split between the number
 of specified tasks so some parallelism can be achieved.  This is not as effective as with an indexed 
 input file, however setting n-tasks to the number of physical cores and threads-per-reader to at least the same value works well with the test laptop 
-described above.  Note that if the file is sorted in genomic order (but not indexed) then increasing the number of tasks will have little effect.
+described above.  Note that if the file is sorted in genomic order (but not indexed) 
+then increasing the number of tasks will have little effect (but increasing hts-threads could have an impact)
 It would be much better in this case to generate the index before running ont_align_stats.
 
 ### <a name="cli"></a>Command line options
@@ -132,7 +133,7 @@ ont_align_stats has several command line options for controlling its operation.
 | T     | reference      | Reference FASTA file                                       | 1                 |
 |||||
 | n     | n-tasks        | Number of parallel read tasks                              | 1                 |
-| t     | hts-threads    | Number of additional threads for hts readers               | 1                 |
+| t     | hts-threads    | Number of threads for hts readers                          | n_tasks           |
 |||||
 | l     | log-level      | Set log level [none, error, warn, info, debug, trace]      | info              |
 |       | timestamp      | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
