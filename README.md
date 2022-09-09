@@ -188,6 +188,7 @@ In particular, all the counts relating to paired reads will not be present for a
 
 ## <a name="changes"></a>Changes
 
+ - 0.12.0p1 Correct bug where hts_threads by default was set to 0, which causes the read process to block.  The default is now 1 and can not be set to 0.
  - 0.12.0 Collect base composition info.  Check for bisulfite aligner tags and if found, handle mismatches taking this into account.
  - 0.11.0 Extend to paired end libraries.  Add many pair related statistics.
  - 0.10.0 Add collection of percentage of indels and base quality distribution.  If reference sequence is supplied, collect % of mismatches in bases that pass the filters.
