@@ -30,6 +30,10 @@ pub struct Config {
     min_mapq: usize,
     // Minimum base quality taken into account for the coverage stats
     min_qual: usize,
+    // Minimum read length taken into account for the coverage stats
+    min_read_len: Option<usize>,
+    // Maximum read length taken into account for the coverage stats
+    max_read_len: Option<usize>,
 
     // Operation options
     n_tasks: usize,
@@ -75,11 +79,23 @@ impl Config {
     pub fn set_min_qual(&mut self, x: usize) {
         self.min_qual = x
     }
+    pub fn set_min_read_len(&mut self, x: Option<usize>) {
+        self.min_read_len = x
+    }
+    pub fn set_max_read_len(&mut self, x: Option<usize>) {
+        self.max_read_len = x
+    }
     pub fn min_mapq(&self) -> usize {
         self.min_mapq
     }
     pub fn min_qual(&self) -> usize {
         self.min_qual
+    }
+    pub fn min_read_len(&self) -> Option<usize> {
+        self.min_read_len
+    }
+    pub fn max_read_len(&self) -> Option<usize> {
+        self.max_read_len
     }
     pub fn set_hts_threads(&mut self, x: usize) {
         self.hts_threads = x

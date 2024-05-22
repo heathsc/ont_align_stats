@@ -1,4 +1,4 @@
-use r_htslib::BamRec;
+use r_htslib::{BamAux, BamRec};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum BSStrand {
@@ -19,7 +19,8 @@ enum Aligner {
 pub(super) fn get_bs_strand(b: &BamRec) -> Option<BSStrand> {
     let mut strand = None;
     if let Some(itr) = b.get_aux_iter() {
-        for tag in itr {
+        for b in itr {
+            let tag = b.data();
             let aligner = {
                 if tag[0] == b'Z' {
                     if tag[1] == b'B' {

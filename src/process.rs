@@ -84,7 +84,12 @@ pub fn process(
     let min_mapq = cfg.min_mapq().min(255) as u8;
     metadata.insert("min_qual", format!("{}", min_qual));
     metadata.insert("min_mapq", format!("{}", min_mapq));
-
+    if let Some(l) = cfg.min_read_len() {
+        metadata.insert("min_read_len", format!("{l}"));
+    }
+    if let Some(l) = cfg.max_read_len() {
+        metadata.insert("max_read_len", format!("{l}"));
+    }
     let st = if cfg.indexed() {
         debug!("Processing input with index");
 

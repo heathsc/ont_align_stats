@@ -27,7 +27,7 @@ pub fn open_input<P: AsRef<Path>>(
         fmt.opt_add(format!("nthreads={}", nthreads))?
     }
     // Try opening input file
-    let mut hts = Hts::open_format(name, "r", &fmt)
+    let mut hts = Hts::open_format(Some(name), "r", &fmt)
         .with_context(|| format!("Failed to open input file {}", name.display()))?;
 
     // Check that this is a SAM type file (SAM/BAM/CRAM)

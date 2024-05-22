@@ -422,6 +422,24 @@ impl Regions {
             }
         }
     }
+
+    pub fn ctg_regions_length(&self, ctg: &str) -> Option<usize> {
+        self.ctg_reg.get(ctg).map(|v| {
+            let mut l = 0;
+            for reg in v.iter() {
+                let rl = reg.length().expect("Open region found");
+                l += rl;
+            }
+            l
+        })
+    }
+
+    pub fn total_regions_Length(&self) -> usize {
+        self.ctg_reg
+            .keys()
+            .map(|ctg| self.ctg_regions_length(ctg).expect("Missing contig length"))
+            .sum::<usize>()
+    }
 }
 
 pub fn find_overlapping_regions(rvec: &[Region], x: usize, y: usize) -> Vec<usize> {

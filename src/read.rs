@@ -1,5 +1,5 @@
 pub mod bisulfite;
-mod coverage;
+pub mod coverage;
 mod handle_sa_tag;
 mod utils;
 
@@ -7,9 +7,9 @@ use std::{collections::HashMap, path::Path};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use r_htslib::{
-    BamRec, HtsItrReader, HtsRead, HtsThreadPool, Sequence, BAM_FDUP, BAM_FMUNMAP, BAM_FPAIRED,
-    BAM_FPROPER_PAIR, BAM_FQCFAIL, BAM_FREAD1, BAM_FREAD2, BAM_FREVERSE, BAM_FSECONDARY,
-    BAM_FSUPPLEMENTARY, BAM_FUNMAP,
+    BamRec, HtsIterator, HtsItrReader, HtsRead, HtsThreadPool, Sequence, BAM_FDUP, BAM_FMUNMAP,
+    BAM_FPAIRED, BAM_FPROPER_PAIR, BAM_FQCFAIL, BAM_FREAD1, BAM_FREAD2, BAM_FREVERSE,
+    BAM_FSECONDARY, BAM_FSUPPLEMENTARY, BAM_FUNMAP,
 };
 
 use crate::{
@@ -182,7 +182,6 @@ pub fn reader(
 
     let mut hts = input::open_input(in_file, false, cfg.reference(), cfg.hts_threads(), tpool)
         .expect("Error opening input file in thread");
-    let min_qual = cfg.min_qual().min(255) as u8;
     let min_mapq = cfg.min_mapq().min(255) as u8;
 
     let mut cov = Coverage::new();
@@ -264,9 +263,7 @@ pub fn reader(
                         } else {
                             None
                         };
-                        process_coverage(
-                            &mut rec, &sq, &mut cov, min_qual, rd_type, bs_strand, &mut st,
-                        );
+                        process_coverage(&mut rec, &sq, &mut cov, rd_type, bs_strand, &mut st, cfg);
                     } else {
                         warn!("Illegal read type")
                     }
@@ -308,7 +305,6 @@ pub fn read_handler(
     let buf_size = cfg.bam_rec_thread_buffer();
     let mut brec_store = Vec::with_capacity(buf_size);
     let min_mapq = cfg.min_mapq().min(255) as u8;
-    let min_qual = cfg.min_qual().min(255) as u8;
     let mut st = Stats::new();
     let mut cov_vec = Vec::new();
     for tr in region_list.iter() {
@@ -382,10 +378,10 @@ pub fn read_handler(
                             &mut rec,
                             &seq_qual,
                             &mut cov_vec[reg_ix],
-                            min_qual,
                             rd_type,
                             bs_strand,
                             &mut st,
+                            cfg,
                         );
 
                         // Remove next region if exists

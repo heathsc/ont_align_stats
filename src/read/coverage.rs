@@ -1,9 +1,14 @@
-use r_htslib::{BamRec, CigarOp, SeqQual, BAM_FPAIRED, BAM_FPROPER_PAIR, BAM_FREVERSE};
+use r_htslib::{BamRec, CigarOp, SeqQual, BAM_FPAIRED, BAM_FPROPER_PAIR};
 use std::ops::AddAssign;
 
-use crate::stats::{BaseComposition, ReadType, StatType, Stats};
+use crate::{
+    config::Config,
+    stats::{BaseCounts, ReadType, StatType, Stats},
+};
 
 use super::bisulfite::BSStrand;
+
+pub type Matches = [[u32; 5]; 4];
 
 const MIN_PCTG_N: usize = 20;
 
@@ -72,7 +77,7 @@ impl Coverage {
     }
 
     pub(super) fn clear_match_counts(&mut self) {
-        self.match_counts = [0; 2]
+        self.match_counts = [0; 2];
     }
 
     pub(super) fn reset(
@@ -87,7 +92,8 @@ impl Coverage {
         self.cov.clear();
         self.cov.resize(len, 0);
         self.reference.clear();
-        self.match_counts = [0; 2];
+        self.clear_match_counts();
+
         if let Some(p) = rf {
             self.reference.reserve(p.len());
             for c in p {
@@ -116,14 +122,7 @@ impl Coverage {
         }
     }
 
-    pub(super) fn inc(
-        &mut self,
-        x: usize,
-        z: u8,
-        thresh: u8,
-        bc: &mut BaseComposition,
-        st: &mut Stats,
-    ) {
+    pub(super) fn inc(&mut self, x: usize, z: u8, thresh: u8, bc: &mut BaseCounts, st: &mut Stats) {
         if x >= self.start {
             let i = x - self.start;
             if let Some(c) = self.cov.get_mut(i) {
@@ -140,7 +139,7 @@ impl Coverage {
                     }
                     bc.incr_base(b);
                 }
-                st.incr_baseq_pctg(q);
+                st.incr_baseq_counts(q, b as usize);
             }
         }
     }
@@ -150,9 +149,10 @@ impl Coverage {
         x: usize,
         z: u8,
         thresh: u8,
-        bc: &mut BaseComposition,
+        bc: &mut BaseCounts,
         mm_tab: &[[usize; 5]; 4],
         st: &mut Stats,
+        matches: &mut Matches,
     ) {
         if x >= self.start {
             let i = x - self.start;
@@ -170,9 +170,10 @@ impl Coverage {
                     }
                     let rf = self.reference[i] as usize;
                     self.match_counts[mm_tab[b as usize][rf]] += 1;
+                    matches[b as usize][rf] += 1;
                     bc.incr_base(b);
                 }
-                st.incr_baseq_pctg(q);
+                st.incr_baseq_counts(q, b as usize);
             }
         }
     }
@@ -226,16 +227,30 @@ pub(super) fn process_coverage(
     rec: &mut BamRec,
     seq_qual: &SeqQual,
     cov: &mut Coverage,
-    min_qual: u8,
     rd_type: ReadType,
     bs_strand: Option<BSStrand>,
     st: &mut Stats,
+    cfg: &Config,
 ) {
     if let Some(cigar) = rec.cigar() {
+        let slen = seq_qual.len();
+        if let Some(l) = cfg.min_read_len() {
+            if slen < l {
+                return;
+            }
+        }
+        if let Some(l) = cfg.max_read_len() {
+            if slen > l {
+                return;
+            }
+        }
+
+        let min_qual = cfg.min_qual() as u8;
         let mut x = rec.pos().expect("No start position for mapped read") + 1;
         let mut sq = seq_qual.iter().copied();
 
         let mut indel_counts = [0; 2];
+        let mut matches: Matches = [[0; 5]; 4];
         let (start, end) = (cov.start(), cov.end());
 
         // Is this the left most member of a properly paired read pair?
@@ -255,7 +270,7 @@ pub(super) fn process_coverage(
             Some(BSStrand::StrandG2A) => MATCH_TAB_G2A,
             None => MATCH_TAB,
         };
-        let mut bc = BaseComposition::default();
+        let mut bc = BaseCounts::default();
         for elem in cigar.iter() {
             // If we are already past the end of the region we can stop processing the cigar
             if x >= end {
@@ -296,7 +311,7 @@ pub(super) fn process_coverage(
                                 .next()
                                 .expect("Mismatch between Cigar and sequence length");
                             if x < end1 {
-                                cov.inc_with_mm(x, z, min_qual, &mut bc, &mm_tab, st)
+                                cov.inc_with_mm(x, z, min_qual, &mut bc, &mm_tab, st, &mut matches)
                             } else if x < end {
                                 st.incr(StatType::OverlapBases)
                             }
@@ -323,16 +338,14 @@ pub(super) fn process_coverage(
                 _ => (),
             }
         }
-        if (rec.flag() & BAM_FREVERSE) != 0 {
-            bc.complement()
-        }
         st.composition_get_mut(rd_type).add_assign(bc);
 
         // Update stats
         if let Some(p) = cov.mismatch_pctg() {
             st.incr_mismatch_pctg(p);
-            cov.clear_match_counts();
         }
+        cov.clear_match_counts();
+        st.incr_matches(&matches);
         let t = indel_counts[0] + indel_counts[1];
         if t >= MIN_PCTG_N {
             let p = (indel_counts[1] as f64) / (t as f64);

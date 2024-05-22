@@ -1,4 +1,4 @@
-use r_htslib::BamRec;
+use r_htslib::{BamAux, BamRec};
 
 use super::utils::adjust_start_end;
 
@@ -76,45 +76,47 @@ impl<'a> Iterator for SaTagIter<'a> {
 }
 
 pub(super) fn process_sa_tag(rec: &mut BamRec, read_len: usize, v: &mut Vec<(usize, usize)>) {
-    if let Some(Ok(sa)) = rec.get_tag("SA", 'Z').map(std::str::from_utf8) {
-        trace!("Found SA tag for read {}", rec.qname().unwrap());
-        // Collect the start and end points of all supplementary mappings for this read
-        for s in sa.split(';') {
-            if s.len() < 2 {
-                continue;
-            }
-            let fd: Vec<_> = s.split(',').collect();
-            if fd.len() == 6 {
-                if let Some(rev) = match fd[2] {
-                    "+" => Some(false),
-                    "-" => Some(true),
-                    _ => {
-                        warn!("Illegal SA tag {} - strand not + or -", s);
-                        None
-                    }
-                } {
-                    let mut it = SaTagIter::new(fd[3]);
-                    if let Some((a, b)) = sa_get_start_end(&mut it, rev, read_len) {
-                        v.push((a, b))
-                    } else {
-                        warn!(
-                            "Illegal SA Tag {} for read {} (wrong size)",
-                            fd[3],
-                            rec.qname().unwrap()
-                        )
-                    }
+    if let Some(b) = rec.get_tag("SA") {
+        if let Ok(sa) = std::str::from_utf8(b.data()) {
+            trace!("Found SA tag for read {}", rec.qname().unwrap());
+            // Collect the start and end points of all supplementary mappings for this read
+            for s in sa.split(';') {
+                if s.len() < 2 {
+                    continue;
                 }
-            } else {
-                warn!(
-                    "Illegal SA tag {} (wrong number of fields {} instead of 6) >{}<",
-                    s,
-                    fd.len(),
-                    sa
-                )
+                let fd: Vec<_> = s.split(',').collect();
+                if fd.len() == 6 {
+                    if let Some(rev) = match fd[2] {
+                        "+" => Some(false),
+                        "-" => Some(true),
+                        _ => {
+                            warn!("Illegal SA tag {} - strand not + or -", s);
+                            None
+                        }
+                    } {
+                        let mut it = SaTagIter::new(fd[3]);
+                        if let Some((a, b)) = sa_get_start_end(&mut it, rev, read_len) {
+                            v.push((a, b))
+                        } else {
+                            warn!(
+                                "Illegal SA Tag {} for read {} (wrong size)",
+                                fd[3],
+                                rec.qname().unwrap()
+                            )
+                        }
+                    }
+                } else {
+                    warn!(
+                        "Illegal SA tag {} (wrong number of fields {} instead of 6) >{}<",
+                        s,
+                        fd.len(),
+                        sa
+                    )
+                }
             }
-        }
 
-        // Sort mappings  by starting point (on read)
-        v.sort_unstable_by_key(|(x, _)| *x);
+            // Sort mappings  by starting point (on read)
+            v.sort_unstable_by_key(|(x, _)| *x);
+        }
     }
 }

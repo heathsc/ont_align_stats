@@ -6,7 +6,7 @@ use serde::{
     Serialize,
 };
 
-use crate::read::bisulfite::BSStrand;
+use crate::read::{bisulfite::BSStrand, coverage::Matches};
 
 pub enum StatType {
     Mappings = 0,
@@ -78,17 +78,50 @@ where
     map.end()
 }
 
-fn serialize_vec<S>(ct: &[usize], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_vec<S, T>(ct: &[T], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    T: Serialize,
+{
+    let mut map = serializer.serialize_map(Some(ct.len()))?;
+    for (ix, val) in ct.iter().enumerate() {
+        map.serialize_entry(&ix, &val)?;
+    }
+    map.end()
+}
+
+const BASE: [char; 4] = ['A', 'C', 'G', 'T'];
+
+#[derive(Serialize)]
+struct CountProp {
+    count: u64,
+    proportion: f64,
+}
+
+fn serialize_matches<S>(m: &Matches, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let l: usize = ct.iter().fold(0, |s, v| if *v > 0 { s + 1 } else { s });
-    let mut map = serializer.serialize_map(Some(l))?;
-    for (ix, val) in ct.iter().enumerate() {
-        if *val > 0 {
-            map.serialize_entry(&ix, &val)?;
+    let mut map = serializer.serialize_map(Some(13))?;
+
+    let mut tot_mm = 0;
+    let mut tot = 0;
+    for (i, v) in m.iter().enumerate() {
+        tot += v[..4].iter().map(|x| *x as u64).sum::<u64>();
+        for j in (0..4).filter(|j| *j != i) {
+            let t = m.iter().map(|x| x[j] as u64).sum::<u64>() as f64;
+            let count = v[j] as u64;
+            let proportion = (count as f64) / t;
+            let cp = CountProp { count, proportion };
+            tot_mm += count;
+            map.serialize_entry(format!("{}->{}", BASE[j], BASE[i]).as_str(), &cp)?
         }
     }
+    let cp = CountProp {
+        count: tot_mm,
+        proportion: (tot_mm as f64) / (tot as f64),
+    };
+    map.serialize_entry("All mismatches", &cp)?;
     map.end()
 }
 
@@ -125,11 +158,11 @@ where
 }
 
 #[derive(Default, Debug, Copy, Clone)]
-pub struct BaseComposition {
-    counts: [usize; 4],
+pub struct BaseCounts {
+    counts: [u64; 4],
 }
 
-impl AddAssign for BaseComposition {
+impl AddAssign for BaseCounts {
     fn add_assign(&mut self, other: Self) {
         for (a, b) in self.counts.iter_mut().zip(other.counts.iter()) {
             *a += b
@@ -137,25 +170,26 @@ impl AddAssign for BaseComposition {
     }
 }
 
-impl Serialize for BaseComposition {
+impl Serialize for BaseCounts {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
+        let t = self.counts.iter().sum::<u64>() as f64;
+
         let mut map = serializer.serialize_map(Some(4))?;
-        for (k, v) in ['A', 'C', 'G', 'T'].iter().zip(self.counts.iter()) {
-            map.serialize_entry(k, v)?;
+        for (k, count) in BASE.iter().zip(self.counts.iter().copied()) {
+            let proportion = if count > 0 { (count as f64) / t } else { 0.0 };
+            let cp = CountProp { count, proportion };
+            map.serialize_entry(k, &cp)?;
         }
         map.end()
     }
 }
 
-impl BaseComposition {
+impl BaseCounts {
     pub fn incr_base(&mut self, b: u8) {
         self.counts[b as usize] += 1;
-    }
-    pub fn complement(&mut self) {
-        self.counts.reverse();
     }
 }
 
@@ -174,13 +208,16 @@ pub struct Stats {
     #[serde(serialize_with = "serialize_counts")]
     counts: [usize; N_COUNTS],
 
-    composition: BTreeMap<ReadType, BaseComposition>,
+    composition: BTreeMap<ReadType, BaseCounts>,
+
+    #[serde(serialize_with = "serialize_matches")]
+    mismatches: Matches,
 
     #[serde(serialize_with = "serialize_vec")]
     mapped_pctg: Vec<usize>,
 
     #[serde(serialize_with = "serialize_vec")]
-    base_qual_pctg: Vec<usize>,
+    base_qual_hist: Vec<BaseCounts>,
 
     #[serde(serialize_with = "serialize_mm_vec")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -218,14 +255,21 @@ fn add_btreemap<T: AddAssign + Copy + Default, K: Ord + Copy>(
     }
 }
 
+fn add_matches(x: &mut Matches, y: &Matches) {
+    for (p, q) in x.iter_mut().zip(y.iter()) {
+        add_vec(p, q)
+    }
+}
+
 impl AddAssign for Stats {
     fn add_assign(&mut self, other: Self) {
         add_vec(&mut self.counts, &other.counts);
         add_vec(&mut self.mapped_pctg, &other.mapped_pctg);
-        add_vec(&mut self.base_qual_pctg, &other.base_qual_pctg);
+        add_vec(&mut self.base_qual_hist, &other.base_qual_hist);
         add_vec(&mut self.mismatch_pctg, &other.mismatch_pctg);
         add_vec(&mut self.indel_pctg, &other.indel_pctg);
         add_vec(&mut self.primary_mapq, &other.primary_mapq);
+        add_matches(&mut self.mismatches, &other.mismatches);
         add_btreemap(&mut self.read_len, &other.read_len);
         add_btreemap(&mut self.n_splits, &other.n_splits);
         add_btreemap(&mut self.coverage, &other.coverage);
@@ -239,7 +283,7 @@ impl Stats {
         let mut st = Self::default();
         st.primary_mapq.resize(256, 0);
         st.mapped_pctg.resize(101, 0);
-        st.base_qual_pctg.resize(101, 0);
+        st.base_qual_hist.resize(101, BaseCounts::default());
         st.indel_pctg.resize(101, 0);
         st.mismatch_pctg.resize(1001, 0);
         st
@@ -249,10 +293,10 @@ impl Stats {
         self.counts[ty as usize] += 1
     }
 
-    pub fn composition_get_mut(&mut self, bc: ReadType) -> &mut BaseComposition {
+    pub fn composition_get_mut(&mut self, bc: ReadType) -> &mut BaseCounts {
         self.composition
             .entry(bc)
-            .or_insert_with(BaseComposition::default)
+            .or_insert_with(BaseCounts::default)
     }
 
     pub fn incr_n(&mut self, ty: StatType, n: usize) {
@@ -263,8 +307,8 @@ impl Stats {
         self.primary_mapq[q as usize] += 1
     }
 
-    pub fn incr_baseq_pctg(&mut self, q: u8) {
-        self.base_qual_pctg[q as usize] += 1
+    pub fn incr_baseq_counts(&mut self, q: u8, b: usize) {
+        self.base_qual_hist[q as usize].counts[b] += 1
     }
 
     pub fn update_readlen_stats(&mut self, rl: usize, used: usize) {
@@ -279,6 +323,10 @@ impl Stats {
     pub fn incr_mismatch_pctg(&mut self, p: f64) {
         assert!((0.0..=1.0).contains(&p), "Illegal mismatch percentage");
         self.mismatch_pctg[(p * 1000.0).round() as usize] += 1;
+    }
+
+    pub fn incr_matches(&mut self, m: &Matches) {
+        add_matches(&mut self.mismatches, m)
     }
 
     pub fn incr_template_len(&mut self, x: usize) {

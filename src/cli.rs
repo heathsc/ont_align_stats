@@ -163,6 +163,18 @@ fn cli_model() -> ArgMatches {
                 .default_value("10")
                 .help("Minimum base quality for coverage statistics")
         )
+        .arg(
+            Arg::new("min_read_len")
+                .short('l').long("min-read-len")
+                .takes_value(true).value_name("NUMBER")
+                .help("Minimum read length for coverage statistics")
+        )
+        .arg(
+            Arg::new("max_read_len")
+                .short('L').long("max-read-len")
+                .takes_value(true).value_name("NUMBER")
+                .help("Maximum read length for coverage statistics")
+        )
         .next_help_heading("Output")
         .arg(
             Arg::new("prefix")
@@ -304,6 +316,8 @@ pub fn handle_cli() -> anyhow::Result<(Config, PathBuf, Regions, IndexMap<&'stat
     cfg.set_n_tasks(n_tasks);
     cfg.set_min_mapq(m.value_of_t("min_maxq").unwrap());
     cfg.set_min_qual(m.value_of_t("min_qual").unwrap());
+    cfg.set_min_read_len(m.value_of_t("min_read_len").ok());
+    cfg.set_max_read_len(m.value_of_t("max_read_len").ok());
     cfg.set_hts_threads(hts_threads);
     cfg.set_bam_rec_thread_buffer(m.value_of_t("bam_rec_thread_buffer").unwrap());
     cfg.set_non_index_buffer_size(m.value_of_t("non_index_buffer_size").unwrap());
