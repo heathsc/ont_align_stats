@@ -18,6 +18,8 @@ pub enum StatType {
     Duplicate,
     TotalBases,
     MappedBases,
+    UniqueBases,
+    UsedBases,
     TotalPairs,
     CorrectPairs,
     MateUnmapped,
@@ -47,6 +49,8 @@ const STAT_NAMES: [&str; N_COUNTS] = [
     "Duplicate",
     "TotalBases",
     "MappedBases",
+    "UniqueBases",
+    "UsedBases",
     "TotalPairs",
     "CorrectPairs",
     "MateUnmapped",
@@ -251,7 +255,7 @@ fn add_btreemap<T: AddAssign + Copy + Default, K: Ord + Copy>(
     vt2: &BTreeMap<K, T>,
 ) {
     for (x, y) in vt2.iter() {
-        *bt1.entry(*x).or_insert(T::default()) += *y
+        *bt1.entry(*x).or_default() += *y
     }
 }
 
@@ -296,7 +300,7 @@ impl Stats {
     pub fn composition_get_mut(&mut self, bc: ReadType) -> &mut BaseCounts {
         self.composition
             .entry(bc)
-            .or_insert_with(BaseCounts::default)
+            .or_default()
     }
 
     pub fn incr_n(&mut self, ty: StatType, n: usize) {
@@ -311,12 +315,14 @@ impl Stats {
         self.base_qual_hist[q as usize].counts[b] += 1
     }
 
-    pub fn update_readlen_stats(&mut self, rl: usize, used: usize) {
+    pub fn update_readlen_stats(&mut self, rl: usize, mapped: usize, unique: usize, used: usize) {
         assert!(used <= rl);
         let p = (100.0 * (used as f64) / (rl as f64)).round() as usize;
         *self.read_len.entry(rl).or_insert(0) += 1;
         self.counts[StatType::TotalBases as usize] += rl;
-        self.counts[StatType::MappedBases as usize] += used;
+        self.counts[StatType::MappedBases as usize] += mapped;
+        self.counts[StatType::UniqueBases as usize] += unique;
+        self.counts[StatType::UsedBases as usize] += used;
         self.mapped_pctg[p] += 1
     }
 

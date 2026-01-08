@@ -67,10 +67,10 @@ pub fn process(
     let faidx = if let Some(p) = cfg.reference() {
         trace!("Try to open reference {} and load index", p.display());
         let f = Faidx::load(p);
-        if !f.is_err() {
+        if f.is_ok() {
             trace!("Reference index loaded successfully");
         } else {
-            warn!("Could not load feference index");
+            warn!("Could not load reference index");
         }
         f.ok()
     } else {
@@ -282,7 +282,7 @@ pub fn process(
 
     // Create results file name
     let fname = {
-        let mut d = cfg.dir().map(|p| p.to_owned()).unwrap_or_else(PathBuf::new);
+        let mut d = cfg.dir().map(|p| p.to_owned()).unwrap_or_default();
         d.push(cfg.prefix().expect("Missing output prefix"));
         d.set_extension("json");
         d

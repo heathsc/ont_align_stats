@@ -65,8 +65,10 @@ fn get_read_type(rec: &BamRec) -> Option<ReadType> {
 /// from the read. Since a read can have supplementary alignments, we lok for the SA tag to get the
 /// same information on any other alignments for the read.  This requires making a list of all alignments
 /// for the read, sorting on start order, and then removing any overlaps to ensure bases are only counted once
-fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
-    st.incr_mapq(rec.qual());
+fn process_primary_read(cfg: &Config, rec: &mut BamRec, st: &mut Stats, read_len: usize) {
+    let max_q = rec.qual();
+    st.incr_mapq(max_q);
+    let maxq_ok = max_q as usize >= cfg.min_mapq();
     if let Some(cigar) = rec.cigar() {
         // Find start and end points of aligned bases on read
         let reverse = (rec.flag() & BAM_FREVERSE) != 0;
@@ -82,24 +84,42 @@ fn process_primary_read(rec: &mut BamRec, st: &mut Stats, read_len: usize) {
             // This is a least 1 as we include the primary alignment
             let n_splits = v.len();
 
+            let base_qual = rec.get_qual();
+
+            let get_used = |(p0, p1)| {
+                if maxq_ok {
+                    if let Some(bqual) = base_qual {
+                        bqual[p0..=p1].iter().filter(|q| **q >= max_q).count()
+                    } else {
+                        p1 + 1 - p0
+                    }
+                } else {
+                    0
+                }
+            };
+
             // Get total used bases excluding any overlaps
             let mut lim = v[0].1 + 1;
-            let mut used = lim - v[0].0;
+            let mut mapped = lim - v[0].0;
+            let mut used = get_used(v[0]);
+            
             for v1 in &v[1..] {
                 if v1.1 >= lim {
-                    used += v1.1 + 1 - lim;
+                    mapped += v1.1 + 1 - lim;
+                    used += get_used((lim, v1.1))
                 }
                 lim = lim.max(v1.1 + 1);
             }
+            let unique = if maxq_ok { mapped } else { 0 };
+
             trace!(
-                "Read {}: len {}, n_splits {}, used {} ({}%)",
+                "Read {}: len {}, n_splits {}, mapped {mapped}, unique {unique} used {used} ({}%)",
                 rec.qname().unwrap(),
                 read_len,
                 n_splits,
-                used,
                 (used as f64) * 100.0 / (read_len as f64)
             );
-            st.update_readlen_stats(read_len, used);
+            st.update_readlen_stats(read_len, mapped, unique, used);
             st.incr_n_splits(n_splits);
         } else {
             warn!("Illegal CIGAR for read {}", rec.qname().unwrap())
@@ -245,7 +265,7 @@ pub fn reader(
                         BAM_FSECONDARY | BAM_FDUP | BAM_FQCFAIL | BAM_FUNMAP | BAM_FSUPPLEMENTARY,
                     ) {
                         let rl = rec.l_qseq() as usize;
-                        process_primary_read(&mut rec, &mut st, rl);
+                        process_primary_read(cfg, &mut rec, &mut st, rl);
                     }
                 }
                 if rec.qual() >= min_mapq
@@ -256,9 +276,8 @@ pub fn reader(
                         .expect("Error getting sequence and qualities");
                     if let Some(rd_type) = get_read_type(&rec) {
                         let bs_strand = if cfg.bisulfite() {
-                            bisulfite::get_bs_strand(&rec).map(|s| {
-                                st.incr_bisulfite_strand(s);
-                                s
+                            bisulfite::get_bs_strand(&rec).inspect(|s| {
+                                st.incr_bisulfite_strand(*s);
                             })
                         } else {
                             None
@@ -350,7 +369,7 @@ pub fn read_handler(
             if primary_region && !chk_flg(BAM_FSUPPLEMENTARY) {
                 // Check primary read
                 let rl = rec.l_qseq() as usize;
-                process_primary_read(&mut rec, &mut st, rl);
+                process_primary_read(cfg, &mut rec, &mut st, rl);
             }
             let push_brec = |r: BamRec, mut br: Vec<BamRec>| {
                 br.push(r);
@@ -365,9 +384,8 @@ pub fn read_handler(
                 let seq_qual = rec.get_seq_qual().expect("No sequence/quality data");
                 if let Some(rd_type) = get_read_type(&rec) {
                     let bs_strand = if cfg.bisulfite() {
-                        bisulfite::get_bs_strand(&rec).map(|s| {
-                            st.incr_bisulfite_strand(s);
-                            s
+                        bisulfite::get_bs_strand(&rec).inspect(|s| {
+                            st.incr_bisulfite_strand(*s);
                         })
                     } else {
                         None

@@ -23,7 +23,7 @@ lazy_static! {
     static ref RE_REGION2: Regex = Regex::new(r#"^([0-9A-Za-z!#$%&+./:;?@^_|~-][0-9A-Za-z!#$%&*+./;=?@^_|~-]*):?([0-9,]+)?-?([0-9,]+)?"#).unwrap();
 
     // RegexSet to check for valid contig
-    static ref RE_SET_CONTIG: RegexSet = RegexSet::new(&[
+    static ref RE_SET_CONTIG: RegexSet = RegexSet::new([
         r"^[{]([0-9A-Za-z!#$%&+./:;?@^_|~-][0-9A-Za-z!#$%&*+./:;=?@^_|~-]*)[}]$",
         r"^([0-9A-Za-z!#$%&+./:;?@^_|~-][0-9A-Za-z!#$%&*+./;=?@^_|~-]*)$"
     ]).unwrap();
@@ -181,16 +181,17 @@ impl Regions {
         start: usize,
         end: Option<usize>,
     ) -> anyhow::Result<()> {
-        if let Some(x) = end {
-            if x < start {
-                return Err(anyhow!(
-                    "Invalid region {}:{}-{} Start point after end point",
-                    ctg,
-                    start,
-                    x
-                ));
-            }
+        if let Some(x) = end
+            && x < start
+        {
+            return Err(anyhow!(
+                "Invalid region {}:{}-{} Start point after end point",
+                ctg,
+                start,
+                x
+            ));
         }
+
         self.add_contig(ctg);
         let region = Region {
             start,
@@ -382,8 +383,7 @@ impl Regions {
     pub fn add_tid_info(&mut self, seq_names: &[&str]) {
         let v: Vec<_> = seq_names
             .iter()
-            .enumerate()
-            .map(|(_, ctg)| {
+            .map(|ctg| {
                 self.ctg_reg
                     .get_key_value(*ctg)
                     .map(|(ctg, _)| Rc::clone(ctg))
@@ -423,6 +423,7 @@ impl Regions {
         }
     }
 
+    /* 
     pub fn ctg_regions_length(&self, ctg: &str) -> Option<usize> {
         self.ctg_reg.get(ctg).map(|v| {
             let mut l = 0;
@@ -434,12 +435,13 @@ impl Regions {
         })
     }
 
-    pub fn total_regions_Length(&self) -> usize {
+    pub fn total_regions_length(&self) -> usize {
         self.ctg_reg
             .keys()
             .map(|ctg| self.ctg_regions_length(ctg).expect("Missing contig length"))
             .sum::<usize>()
     }
+    */
 }
 
 pub fn find_overlapping_regions(rvec: &[Region], x: usize, y: usize) -> Vec<usize> {

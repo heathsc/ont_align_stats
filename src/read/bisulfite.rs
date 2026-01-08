@@ -9,7 +9,7 @@ pub enum BSStrand {
 #[derive(PartialEq)]
 enum Aligner {
     Unknown,
-    GEM,
+    Gem,
     Bowtie,
     Novoalign,
     BSMap,
@@ -34,7 +34,7 @@ pub(super) fn get_bs_strand(b: &BamRec) -> Option<BSStrand> {
                     if tag[1] == b'G' {
                         Aligner::Bowtie
                     } else if tag[1] == b'B' {
-                        Aligner::GEM
+                        Aligner::Gem
                     } else {
                         Aligner::Unknown
                     }
@@ -46,7 +46,7 @@ pub(super) fn get_bs_strand(b: &BamRec) -> Option<BSStrand> {
             };
             if aligner != Aligner::Unknown {
                 match tag[2] {
-                    b'A' if aligner == Aligner::GEM => {
+                    b'A' if aligner == Aligner::Gem => {
                         if tag[3] == b'C' {
                             strand = Some(BSStrand::StrandC2T)
                         } else if tag[3] == b'G' {

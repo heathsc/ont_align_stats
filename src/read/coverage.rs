@@ -1,4 +1,4 @@
-use r_htslib::{BamRec, CigarOp, SeqQual, BAM_FPAIRED, BAM_FPROPER_PAIR};
+use r_htslib::{BAM_FPAIRED, BAM_FPROPER_PAIR, BamRec, CigarOp, SeqQual};
 use std::ops::AddAssign;
 
 use crate::{
@@ -234,15 +234,15 @@ pub(super) fn process_coverage(
 ) {
     if let Some(cigar) = rec.cigar() {
         let slen = seq_qual.len();
-        if let Some(l) = cfg.min_read_len() {
-            if slen < l {
-                return;
-            }
+        if let Some(l) = cfg.min_read_len()
+            && slen < l
+        {
+            return;
         }
-        if let Some(l) = cfg.max_read_len() {
-            if slen > l {
-                return;
-            }
+        if let Some(l) = cfg.max_read_len()
+            && slen > l
+        {
+            return;
         }
 
         let min_qual = cfg.min_qual() as u8;

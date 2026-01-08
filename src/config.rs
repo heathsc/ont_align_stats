@@ -3,19 +3,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum CompressOpt {
+    #[default]
     None,
     Gzip,
     Bzip2,
     Xz,
     Zstd,
-}
-
-impl Default for CompressOpt {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Default)]
