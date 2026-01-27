@@ -1,12 +1,11 @@
 use std::{collections::BTreeMap, ops::AddAssign};
 
 use serde::{
-    self,
+    self, Serialize,
     ser::{SerializeMap, Serializer},
-    Serialize,
 };
 
-use crate::read::{bisulfite::BSStrand, coverage::Matches};
+use crate::read::coverage::Matches;
 
 pub enum StatType {
     Mappings = 0,
@@ -32,8 +31,6 @@ pub enum StatType {
     OrientationRF,
     OrientationRR,
     IllegalOrientation,
-    BisulfiteC2T,
-    BisulfiteG2A,
     OverlapBases,
 }
 
@@ -63,8 +60,6 @@ const STAT_NAMES: [&str; N_COUNTS] = [
     "OrientationRF",
     "OrientationRR",
     "IllegalOrientation",
-    "BisulfiteC2T",
-    "BisulfiteG2A",
     "OverlapBases",
 ];
 
@@ -298,9 +293,7 @@ impl Stats {
     }
 
     pub fn composition_get_mut(&mut self, bc: ReadType) -> &mut BaseCounts {
-        self.composition
-            .entry(bc)
-            .or_default()
+        self.composition.entry(bc).or_default()
     }
 
     pub fn incr_n(&mut self, ty: StatType, n: usize) {
@@ -350,13 +343,6 @@ impl Stats {
 
     pub fn incr_n_splits(&mut self, n_splits: usize) {
         *self.n_splits.entry(n_splits).or_insert(0) += 1;
-    }
-
-    pub fn incr_bisulfite_strand(&mut self, bs: BSStrand) {
-        match bs {
-            BSStrand::StrandC2T => self.incr(StatType::BisulfiteC2T),
-            BSStrand::StrandG2A => self.incr(StatType::BisulfiteG2A),
-        }
     }
 
     pub fn counts(&self, ty: StatType) -> usize {

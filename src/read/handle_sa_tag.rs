@@ -1,4 +1,4 @@
-use r_htslib::{BamAux, BamRec};
+use m_htslib::sam::{BamAuxVal, BamRec};
 
 use super::utils::adjust_start_end;
 
@@ -75,14 +75,20 @@ impl<'a> Iterator for SaTagIter<'a> {
     }
 }
 
-pub(super) fn process_sa_tag(rec: &mut BamRec, read_len: usize, v: &mut Vec<(usize, usize)>) {
-    if let Some(b) = rec.get_tag("SA")
-        && let Ok(sa) = std::str::from_utf8(b.data())
+pub(super) fn process_sa_tag(
+    rec: &mut BamRec,
+    read_len: usize,
+    v: &mut Vec<(usize, usize)>,
+) -> anyhow::Result<()> {
+    if let Some(b) = rec.get_tag("SA")?
+        && let Ok(bval) = b.get_val()
+        && let BamAuxVal::String(cs) = bval
+        && let Ok(sa) = cs.to_str()
     {
-        trace!("Found SA tag for read {}", rec.qname().unwrap());
+        trace!("Found SA tag {sa:?} for read {:?}", rec.qname().unwrap());
         // Collect the start and end points of all supplementary mappings for this read
         for s in sa.split(';') {
-            if s.len() < 2 {
+            if s.len() < 11 {
                 continue;
             }
             let fd: Vec<_> = s.split(',').collect();
@@ -100,7 +106,7 @@ pub(super) fn process_sa_tag(rec: &mut BamRec, read_len: usize, v: &mut Vec<(usi
                         v.push((a, b))
                     } else {
                         warn!(
-                            "Illegal SA Tag {} for read {} (wrong size)",
+                            "Illegal SA Tag {} for read {:?} (wrong size)",
                             fd[3],
                             rec.qname().unwrap()
                         )
@@ -119,4 +125,5 @@ pub(super) fn process_sa_tag(rec: &mut BamRec, read_len: usize, v: &mut Vec<(usi
         // Sort mappings  by starting point (on read)
         v.sort_unstable_by_key(|(x, _)| *x);
     }
+    Ok(())
 }

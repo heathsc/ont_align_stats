@@ -1,32 +1,22 @@
-use std::{
-    collections::HashMap,
-    fmt::Display,
-    fs,
-    path::{Path, PathBuf},
-    rc::Rc,
-    thread,
-};
+use std::{fmt::Display, fs, sync::Arc, thread};
 
 use anyhow::Context;
 use compress_io::compress::CompressIo;
 use compress_io::compress_type::CompressType;
-use crossbeam_channel::{bounded, unbounded};
+use crossbeam_channel::bounded;
 use indexmap::IndexMap;
-use r_htslib::{Faidx, HtsThreadPool};
+use m_htslib::{
+    faidx::Faidx,
+    hts::HtsThreadPool,
+    region::{Reg, RegCtgName},
+};
 
 use serde::{
-    self,
+    self, Serialize,
     ser::{SerializeMap, Serializer},
-    Serialize,
 };
 
-use crate::{
-    collect,
-    config::{CompressOpt, Config},
-    read,
-    regions::{Regions, TaskRegion},
-    stats::Stats,
-};
+use crate::{CompressOpt, Config, collect, metadata, read, stats::Stats};
 
 fn serialize_im<S, K, V>(im: &IndexMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -49,13 +39,12 @@ struct Output {
     stats: Stats,
 }
 
-pub fn process(
-    cfg: Config,
-    input: PathBuf,
-    regions: Regions,
-    mut metadata: IndexMap<&'static str, String>,
-) -> anyhow::Result<()> {
-    let nreg = regions.len();
+pub fn process(cfg: Config) -> anyhow::Result<()> {
+    let mut metadata = IndexMap::new();
+    metadata::collect_starting_metadata(&mut metadata);
+
+    let nreg = cfg.region_list().regions().count();
+
     let n_tasks = cfg.n_tasks().min(nreg);
     let nthr = cfg.hts_threads();
     debug!(
@@ -63,25 +52,34 @@ pub fn process(
         nreg, n_tasks, nthr
     );
     let cfg_ref = &cfg;
-    let ifile: &Path = input.as_ref();
-    let faidx = if let Some(p) = cfg.reference() {
-        trace!("Try to open reference {} and load index", p.display());
-        let f = Faidx::load(p);
+    let ifile = cfg.input();
+
+    let tpool = HtsThreadPool::init(cfg.hts_threads());
+    let tpool_ref = tpool.as_ref();
+
+    let mut faidx = if let Some(p) = cfg.reference() {
+        trace!("Try to open reference {}", p.display());
+        let f = Faidx::load_or_create(p);
         if f.is_ok() {
             trace!("Reference index loaded successfully");
         } else {
-            warn!("Could not load reference index");
+            warn!("Could not load reference");
         }
-        f.ok()
+        let mut fx = f.ok();
+        if let Some(tp) = tpool_ref
+            && let Some(fai) = fx.as_mut()
+        {
+            fai.set_thread_pool(tp);
+        }
+        fx
     } else {
         None
     };
 
-    metadata.insert("indexed", format!("{}", cfg.indexed()));
     metadata.insert("n_tasks", format!("{}", n_tasks));
     metadata.insert("threads_per_reader", format!("{}", nthr));
-    let min_qual = cfg.min_qual().min(255) as u8;
-    let min_mapq = cfg.min_mapq().min(255) as u8;
+    let min_qual = cfg.min_qual();
+    let min_mapq = cfg.min_mapq();
     metadata.insert("min_qual", format!("{}", min_qual));
     metadata.insert("min_mapq", format!("{}", min_mapq));
     if let Some(l) = cfg.min_read_len() {
@@ -90,190 +88,94 @@ pub fn process(
     if let Some(l) = cfg.max_read_len() {
         metadata.insert("max_read_len", format!("{l}"));
     }
-    let st = if cfg.indexed() {
-        debug!("Processing input with index");
+    debug!("Processing input");
 
-        let tpool = HtsThreadPool::new(cfg.hts_threads());
-        let tpool_ref = tpool.as_ref();
-        // Create thread scope so that we can share references across threads
-        thread::scope(|scope| {
-            let (collector_tx, collector_rx) = bounded(n_tasks * 4);
-            let collector_task = scope.spawn(|| collect::collector(collector_rx));
+    let mut error = None;
+    // Create thread scope so that we can share references across threads
+    let st = thread::scope(|scope| {
+        let (collector_tx, collector_rx) = bounded(n_tasks * 4);
+        let collector_task = scope.spawn(|| collect::collector(collector_rx));
 
-            // Spawn threads
-            let (region_tx, region_rx) = bounded(n_tasks * 4);
-            let mut tasks: Vec<_> = (0..n_tasks)
-                .map(|ix| {
-                    let rx = region_rx.clone();
-                    let tx = collector_tx.clone();
-                    scope.spawn(move || read::reader(cfg_ref, ix, ifile, tx, rx, tpool_ref))
-                })
-                .collect();
-            drop(collector_tx);
+        // Spawn threads
+        let (region_tx, region_rx) = bounded(n_tasks * 4);
+        let mut tasks: Vec<_> = (0..n_tasks)
+            .map(|ix| {
+                let rx = region_rx.clone();
+                let tx = collector_tx.clone();
+                scope.spawn(move || read::reader(cfg_ref, ix, ifile, tx, rx, tpool_ref))
+            })
+            .collect();
+        drop(collector_tx);
 
-            // Send unmapped reads to readers
-            region_tx
-                .send((String::from('*'), 0, None, None))
-                .expect("Error sending region message");
+        let mut prev_reg: Option<Reg> = None;
+        let mut seq = None;
+        // Send mapped regions to readers
+        for reg in cfg.region_list().regions() {
+            trace!("Sending region {reg} for processing");
 
-            // Send mapped regions to readers
-            for (ctg, regv) in regions.iter() {
-                let ctg_str = if ctg.contains(':') {
-                    format!("{{{}}}", ctg)
+            let preg = if let Some(pctg) = prev_reg.and_then(|r| r.reg_contig())
+                && let Some(ctg) = reg.reg_contig()
+                && pctg == ctg
+            {
+                prev_reg
+            } else {
+                None
+            };
+
+            // Load the sequence for the contig if not already done so
+            if prev_reg.is_none() {
+                if reg.reg_contig().is_some() {
+                    seq = None
                 } else {
-                    format!("{}", ctg)
-                };
-                for (ix, reg) in regv.iter().enumerate() {
-                    let s = format!("{}{}", ctg_str, reg);
-                    trace!("Sending region {} for processing", s);
-                    // Load sequence if reference file has been supplied
-                    let seq = if let Some(f) = &faidx {
-                        trace!("Loading sequence for region");
-                        let f = f.fetch_seq(ctg, reg.start(), reg.end());
-                        if f.is_ok() {
-                            trace!("Sequence loaded successfully");
-                        } else {
-                            warn!("Error loading sequence for region {}", s);
+                    seq = if let Some(f) = faidx.as_mut() {
+                        match f.fetch_seq(
+                            reg.to_cstr().expect("Error getting contig name"),
+                            0,
+                            None,
+                        ) {
+                            Ok(sq) => {
+                                trace!("Sequence for {} loaded successfully", reg.contig_name());
+                                Some(Arc::new(sq))
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Error loading sequence for contig {}: {e}",
+                                    reg.contig_name()
+                                );
+                                None
+                            }
                         }
-                        f.ok()
                     } else {
                         None
                     };
-                    region_tx
-                        .send((s, ix, Some(regv), seq))
-                        .expect("Error sending region message");
                 }
             }
-            drop(region_tx);
 
-            // Wait for readers to finish
-            for jh in tasks.drain(..) {
-                let _ = jh.join();
-            }
-            // Wait for collector to finish
-            collector_task.join()
-        })
-    } else {
-        debug!("Processing input without index using {} tasks", n_tasks);
+            prev_reg = Some(reg);
+            let s = seq.as_ref().map(|sq| sq.clone());
 
-        // First we assign regions to each task
-
-        // Get total length of all regions
-        let total_size: usize = regions
-            .values()
-            .map(|regv| {
-                regv.iter()
-                    .map(|r| r.length().expect("Open interval found"))
-                    .sum::<usize>()
-            })
-            .sum();
-        debug!("Total length of all regions: {}", total_size);
-
-        // Allocate regions to tasks
-        // Tasks are given contiguous sets of regions to decrease
-        // the chance that a read spans regions handled by different tasks.
-        // If a reference has been supplied then we also read in the reference for
-        // each region
-        let mut region_hash = HashMap::new();
-        let mut remainder = total_size;
-        let mut task_ix = 0;
-        let mut current_total = 0;
-        let mut task_regions = Vec::with_capacity(n_tasks);
-        let mut task_region_list = Vec::new();
-        if faidx.is_some() {
-            debug!("Allocating regions to tasks and loading in reference sequence")
-        } else {
-            debug!("Allocating regions to tasks")
+            region_tx
+                .send((reg, preg, s))
+                .expect("Error sending region message");
         }
-        for (ctg, regv) in regions.iter() {
-            let mut v = Vec::with_capacity(regv.len());
-            let mut tv = Vec::new();
-            for (reg_ix, reg) in regv.iter().enumerate() {
-                let l = reg.length().unwrap();
-                let avail = n_tasks - task_ix;
-                let seq = if let Some(f) = faidx.as_ref() {
-                    trace!("Loading sequence for region");
-                    let f = f.fetch_seq(ctg, reg.start(), reg.end());
-                    if f.is_ok() {
-                        trace!("Sequence loaded successfully");
-                    } else {
-                        warn!("Error loading sequence for region {}:{}", ctg, reg);
-                    }
-                    f.ok()
-                } else {
-                    None
-                };
-                if avail == 1 || current_total + l < remainder / avail {
-                    current_total += l;
+        drop(region_tx);
 
-                    tv.push((reg, reg_ix, seq))
-                } else {
-                    debug!("Task {}, total region length {}", task_ix, current_total);
-                    if !tv.is_empty() {
-                        let tr = TaskRegion::new(ctg.as_ref(), tv);
-                        task_region_list.push(tr);
-                        tv = Vec::new();
-                    }
-                    task_regions.push(task_region_list);
-                    task_region_list = Vec::new();
-                    task_ix += 1;
-                    remainder -= current_total;
-                    current_total = l;
-                    tv.push((reg, reg_ix, seq));
-                }
-                v.push(task_ix)
-            }
-            region_hash.insert(Rc::clone(ctg), v);
-            if !tv.is_empty() {
-                let tr = TaskRegion::new(ctg.as_ref(), tv);
-                task_region_list.push(tr)
+        // Wait for readers to finish
+        for jh in tasks.drain(..) {
+            if let Err(e) = jh.join().expect("Error joining read threads")
+                && error.is_none()
+            {
+                error = Some(Box::new(e))
             }
         }
-        task_regions.push(task_region_list);
-        debug!("Task {}, total region length {}", task_ix, current_total);
-
-        thread::scope(|scope| {
-            // Spawn handling tasks
-
-            let (collector_tx, collector_rx) = bounded(n_tasks * 4);
-            let collector_task = scope.spawn(|| collect::collector(collector_rx));
-
-            let (bam_tx, bam_rx) = unbounded();
-            let mut task_tx = Vec::with_capacity(n_tasks);
-            let mut tasks: Vec<_> = task_regions
-                .iter()
-                .enumerate()
-                .map(|(ix, th)| {
-                    let (tx, rx) = unbounded();
-                    task_tx.push(tx);
-                    let collect_tx = collector_tx.clone();
-                    let b_tx = bam_tx.clone();
-                    scope.spawn(move || read::read_handler(cfg_ref, ix, th, collect_tx, rx, b_tx))
-                })
-                .collect();
-            drop(bam_tx);
-            // Read from input
-            read::read_input_mt(
-                cfg_ref,
-                ifile,
-                &regions,
-                &task_regions,
-                task_tx,
-                bam_rx,
-                collector_tx,
-            )
-            .expect("Error opening input file");
-
-            // Wait for read handlers to finish
-            for jh in tasks.drain(..) {
-                let _ = jh.join();
-            }
-            // Wait for collector to finish
-            collector_task.join()
-        })
-    }
+        // Wait for collector to finish
+        collector_task.join()
+    })
     .expect("Processing error");
 
+    if let Some(e) = error {
+        return Err(anyhow!("Processing error: {e:?}"))
+    }
     // Create output dir if necessary
     if let Some(dir) = cfg.dir() {
         fs::create_dir_all(dir).with_context(|| "Could not create output directory")?;
@@ -283,7 +185,7 @@ pub fn process(
     // Create results file name
     let fname = {
         let mut d = cfg.dir().map(|p| p.to_owned()).unwrap_or_default();
-        d.push(cfg.prefix().expect("Missing output prefix"));
+        d.push(cfg.prefix());
         d.set_extension("json");
         d
     };
@@ -311,26 +213,25 @@ pub fn process(
     //        .with_context(|| format!("Could not open output file {}", fname.display()))?;
 
     // Get elapsed time
-    if let Some(mut t) = cfg.elapsed().map(|d| d.as_secs_f64()) {
-        let mut s = String::new();
-        if t > 24.0 * 3600.0 {
-            let days = (t / (24.0 * 3600.0)).floor() as u32;
-            s.push_str(format!("{}d", days).as_str());
-            t -= (days as f64) * 24.0 * 3600.0;
-        }
-        if t > 3600.0 {
-            let hours = (t / 3600.0).floor() as u32;
-            s.push_str(format!("{}h", hours).as_str());
-            t -= (hours as f64) * 3600.0;
-        }
-        if t > 60.0 {
-            let mins = (t / 60.0).floor() as u32;
-            s.push_str(format!("{}m", mins).as_str());
-            t -= (mins as f64) * 60.0;
-        }
-        s.push_str(format!("{:.3}s", t).as_str());
-        metadata.insert("elapsed_time", s);
+    let mut t = cfg.elapsed().as_secs_f64();
+    let mut s = String::new();
+    if t > 24.0 * 3600.0 {
+        let days = (t / (24.0 * 3600.0)).floor() as u32;
+        s.push_str(format!("{}d", days).as_str());
+        t -= (days as f64) * 24.0 * 3600.0;
     }
+    if t > 3600.0 {
+        let hours = (t / 3600.0).floor() as u32;
+        s.push_str(format!("{}h", hours).as_str());
+        t -= (hours as f64) * 3600.0;
+    }
+    if t > 60.0 {
+        let mins = (t / 60.0).floor() as u32;
+        s.push_str(format!("{}m", mins).as_str());
+        t -= (mins as f64) * 60.0;
+    }
+    s.push_str(format!("{:.3}s", t).as_str());
+    metadata.insert("elapsed_time", s);
 
     let out = Output {
         metadata,

@@ -5,16 +5,16 @@ extern crate anyhow;
 
 mod cli;
 mod collect;
-mod config;
 mod input;
-mod mappability;
 mod metadata;
 mod process;
 mod read;
 mod regions;
 mod stats;
 
+pub use cli::config::{Config, CompressOpt};
+
 fn main() -> anyhow::Result<()> {
-    let (cfg, input, regions, metadata) = cli::handle_cli()?;
-    process::process(cfg, input, regions, metadata)
+    let cfg = cli::handle_cli()?;
+    process::process(cfg)
 }

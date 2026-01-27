@@ -1,4 +1,4 @@
-use r_htslib::{Cigar, CigarOp};
+use m_htslib::sam::{Cigar, CigarOp};
 
 pub(super) fn get_start_end(cigar: &Cigar, rev: bool, read_len: usize) -> Option<(usize, usize)> {
     let mut first = 0;
