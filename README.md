@@ -2,8 +2,8 @@
 
 Utility for calculating mapping statistics from
 indexed BAM files. Although intended for ONT reads, ont_align_stats will work for
-both long and short read sequence data from paired or non-paired libraries. It will work both with both
-sorted & indexed BAMS and with unsorted unindexed BAMS (although these require more memory to process).
+both long and short read sequence data from paired or non-paired libraries. Input files are SAM/BAM/CRAM 
+and must be sorted and indexed. 
 The principal objective of ont_align_stats is to calculate the coverage distribution, but many additional statistics are
 also collected. There is the ability to restrict the calculations to particular genomic regions, and to
 only consider the uniquely mappable subset of the genome.
@@ -42,7 +42,7 @@ If you have an error during linkage about not being able to find libhts then you
 location of libhts
 during the build process:
 
-    RUSTFLAGS="-L /opt/share/htslib/1.14/lib/"  cargo build --release
+    RUSTFLAGS="-L /opt/share/htslib/1.23/lib/"  cargo build --release
 
 After successful the executable will be found in target/release/. It
 should be copied somewhere where it can be found by the shell.
@@ -61,11 +61,8 @@ with alignment statistics. While intended for non-paired long reads it should wo
 types of sequence data, however no account is taken of paired reads (and in particular any overlap
 between the two reads in a pair will be counted twice for the coverage statistics).
 
-The input file should normally be sorted by genomic coordinates and indexed; ont_align_stats will work
-without an index file but will generally require much more memory (~12 GB for a human genome) while memory
-usage for an indexed input file will depend on the threading options chosen but will generally be <1 GB. Note in
-particular that if the input is sorted on genomic coordinates but an index is not available then
-the --n-tasks options will not be effective.
+The input file should be sorted by genomic coordinates and indexed. Mmemory
+usage will depend on the threading options chosen but will generally be <1 GB.
 
 By default, the entire genome is processed; this can be altered using the --region, --regions and --mappability options.
 The --region argument allows a genome region to be specified on the command line in the standard way
@@ -77,18 +74,10 @@ specify multiple genomic regions, however if a large set of regions is required 
 allows the specification of a BED file containing the desired regions. Note that the supplied BED file can
 be compressed and will be decompressed transparently as long as a suitable tool is present in the users PATH.
 
-The --mappability option also specifies a BED file with regions to consider, but there are
-subtle differences between the --mappability and --regions options. The --mappability regions list
-regions that have previously been annotated as being uniquely mappable; this allows the coverage
-statistics to be calculated just on the mappable fraction of the genome. The mappability BED file can often
-contain many regions (potentially millions), some of which are very small. The --regions option is
-optimized for the case of large regions (on the order of megabases) whereas the --mappability option will handle
-a large number of very small regions efficiently. Supplying the mappability BED file
-as an argument to the --regions option will generally lead to ont_align_stats running
-very slowly.
-
-If both the --region (or --regions) option and the --mappability option are provided then the
-intersect of the two sets of regions is considered for the coverage statistics.
+The --mappability option also specifies a BED file with regions to consider and is used to list
+regions that have previously been annotated as being uniquely mappable; this allows the
+statistics to be calculated just on the mappable fraction of the genome.  If both the --region (or --regions) option 
+and the --mappability option are provided then the intersect of the two sets of regions is considered for the statistics.
 
 ### <a name="thread"></a>Multithreading options
 
@@ -96,28 +85,16 @@ Increased performance can be achieved using the multithreading options. There ar
 --n-tasks (or -n) and --hts-threads (or -t).  
 The --hts-threads option determines the number of additional threads for each hts file reading
 task; libhts is used to read SAM/BAM/CRAM files, and can use multiple threads to increase the
-performance of the file reading/decoding. Note that the hts_threads are shared across all file reading tasks. The
-behaviour of the --n-tasks option depends on
-whether the input file is indexed or not. The --n-tasks and --hts-threads options are set to
-1 and n_tasks respectively by default, so to obtain any
-benefit from multi-threading these options should be used.
+performance of the file reading/decoding. Note that the hts_threads are shared across all file reading tasks.
+The --n-tasks and --hts-threads options are both set to the number of available physical cores by default.
 
-If the file is indexed and the requested number of tasks is >1
+If the requested number of tasks is >1
 then the input file will be opened multiple times and read from in parallel. The optimal
 combination of --n-tasks and --hts-threads will depend on the computer system and should be found
 by doing some preliminary testing. On a 8 (physical) core test laptop with SSDs, saturation of the CPUs (so
 16 virtual cores running at almost 100%) can be achieved with n-tasks set to the number of physical cores and
 hts-threads set to the number of virtual cores, but your mileage might vary. Note that if n-tasks is set
 to >1 the hts threads are shared across tasks.
-
-If the file is not indexed the input file will only be opened once irrespective of
-the --n-tasks setting; however the genomic regions to be considered will be split between the number
-of specified tasks so some parallelism can be achieved. This is not as effective as with an indexed
-input file, however setting n-tasks to the number of physical cores and threads-per-reader to at least the same value
-works well with the test laptop
-described above. Note that if the file is sorted in genomic order (but not indexed)
-then increasing the number of tasks will have little effect (but increasing hts-threads could have an impact)
-It would be much better in this case to generate the index before running ont_align_stats.
 
 ### <a name="cli"></a>Command line options
 
@@ -139,8 +116,8 @@ ont_align_stats has several command line options for controlling its operation.
 | m     | mappability    | Mappability BED file                                       | 1                 |
 | T     | reference      | Reference FASTA file                                       | 1                 |
 |       |                |                                                            |                   |
-| n     | n-tasks        | Number of parallel read tasks                              | 1                 |
-| t     | hts-threads    | Number of threads for hts readers                          | n_tasks           |
+| n     | n-tasks        | Number of parallel read tasks                              | physical cores    |
+| t     | hts-threads    | Number of threads for hts readers                          | physical cores    |
 |       |                |                                                            |                   |
 | l     | log-level      | Set log level [none, error, warn, info, debug, trace]      | info              |
 |       | timestamp      | Prepend log entries with timestamp [none, sec, ms, us, ns] | none              |
@@ -184,8 +161,6 @@ These are described below:
     * OrientationRF: Read 1 on - strand, read 2 on + strand
     * OrientationRR: Both read 1 and read 2 on the - strand
     * IllegalOrientation: Invalid combination of orientation flags (aligner bug)
-    * BisulfiteC2T: Number of reads with an aligner tag indicating a C2T bisulfite converted read
-    * BisulfiteG2A: Number of reads with an aligner tag indicating a G2A bisulfite converted read
     * OverlapBases: Number of bases overlapping between the two reads of a pair (not counted for the coverage)
 - composition: Base composition counts. For non-paired reads these are separated by strand, and for paired reads they
   are separated by strand and read number (1 or 2)
@@ -204,6 +179,7 @@ These are described below:
 
 ## <a name="changes"></a>Changes
 
+- 0.14.0 Move to using m_htslib. Strip out non-indxed handling and bisulfite tags (which are not ONT)
 - 0.13.0 Add more statistics on base composition and mismatches
 - 0.12.1 Correct bug where hts_threads by default was set to 0, which causes the read process to block. The default is
   now equal to n_tasks and can not be set to 0.
