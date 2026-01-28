@@ -235,6 +235,8 @@ pub fn reader(
     while let Ok((reg, prev_reg, seq)) = rx.recv() {
         assert!(!reg.is_all(), "Should not be getting the All Reg type here");
 
+        debug!("Processing region {reg}. Sequence present: {}", seq.is_some());
+        
         let rlist = if reg.is_unmapped() {
             None
         } else {
@@ -245,7 +247,7 @@ pub fn reader(
             let begin = rlist.start() as usize;
             let end = rlist.end() as usize;
             let rf = seq.as_ref().map(|s| {
-                s.get_seq(begin, end)
+                s.get_seq(begin + 1, end + 1)
                     .expect("Error getting reference sequence for region")
             });
             cov.reset(begin, end, rf);
@@ -277,8 +279,8 @@ pub fn reader(
                 let rl = rlist
                     .as_ref()
                     .expect("Should not be getting upmapped reads here");
-                let x = rec.pos().expect("Missing position for mapped read") + 1;
-                let y = rec.endpos() + 1;
+                let x = rec.pos().expect("Missing position for mapped read");
+                let y = rec.endpos();
 
                 // If mapping lies entirely within region then it can not appear in another region (as regions do not overlap)
                 // If not then we check to see if this is the first region the mapping would appear in otherwise we skip.

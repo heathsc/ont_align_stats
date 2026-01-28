@@ -16,7 +16,7 @@ use crate::{
     stats::{BaseCounts, ReadType, StatType, Stats},
 };
 
-pub type Matches = [[u32; 5]; 4];
+pub type Matches = [[u64; 5]; 4];
 
 const MIN_PCTG_N: usize = 20;
 
@@ -32,10 +32,10 @@ const BASE_TAB: [u8; 256] = [
 ];
 
 const MATCH_TAB: [[usize; 5]; 4] = [
-    [0, 1, 1, 1, 1], // Observed A
-    [1, 0, 1, 1, 1], // Observed C
-    [1, 1, 0, 1, 1], // Observed G
-    [1, 1, 1, 0, 1], // Observed T
+    [0, 1, 1, 1, 2], // Observed A
+    [1, 0, 1, 1, 2], // Observed C
+    [1, 1, 0, 1, 2], // Observed G
+    [1, 1, 1, 0, 2], // Observed T
 ];
 
 #[derive(Default)]
@@ -43,13 +43,13 @@ pub(super) struct Coverage {
     start: usize,       // Start of region
     cov: Vec<u32>,      // Coverage // Mappability bit map
     reference: Vec<u8>, // Reference sequence
-    match_counts: [u32; 2],
+    match_counts: [u32; 3],
 }
 
 impl Coverage {
     fn _calc_lens(start: usize, end: usize) -> usize {
-        assert!(end >= start);
-        end + 1 - start
+        assert!(end > start);
+        end - start
     }
 
     pub(super) fn new() -> Self {
@@ -69,7 +69,7 @@ impl Coverage {
     }
 
     pub(super) fn clear_match_counts(&mut self) {
-        self.match_counts = [0; 2];
+        self.match_counts = [0; 3];
     }
 
     pub(super) fn reset(&mut self, start: usize, end: usize, rf: Option<&[u8]>) {
@@ -184,7 +184,7 @@ pub(super) fn process_coverage(
         }
 
         let min_qual = cfg.min_qual();
-        let mut x = rec.pos().expect("No start position for mapped read") + 1;
+        let mut x = rec.pos().expect("No start position for mapped read");
 
         let mut indel_counts = [0; 2];
         let mut matches: Matches = [[0; 5]; 4];

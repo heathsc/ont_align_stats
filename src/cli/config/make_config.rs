@@ -31,7 +31,6 @@ impl Config {
 
         let n_tasks = *m.get_one::<u64>("n_tasks").unwrap() as usize;
         let hts_threads = m.get_one::<u64>("hts_threads").map(|x| *x as usize).unwrap_or_else(get_physical);
-        let bam_rec_thread_buffer = *m.get_one::<u64>("bam_rec_thread_buffer").unwrap() as usize;
 
         let min_mapq = *m.get_one::<u8>("min_mapq").unwrap();
         let min_qual = *m.get_one::<u8>("min_qual").unwrap();
@@ -60,7 +59,6 @@ impl Config {
             reference,
             n_tasks,
             hts_threads,
-            bam_rec_thread_buffer,
             min_mapq,
             min_qual,
             min_read_len,
@@ -112,6 +110,8 @@ fn make_region_list(m: &ArgMatches, input: &Path) -> anyhow::Result<RegionList> 
         }
     };
 
+    debug!("Initial region count: {}", rlist.regions().count());
+    
     if chk_flag {
         for c in rlist.contigs() {
             if hdr.name2tid(c).is_err() {
@@ -121,13 +121,17 @@ fn make_region_list(m: &ArgMatches, input: &Path) -> anyhow::Result<RegionList> 
     }
 
     if let Some(map) = m.get_one::<PathBuf>("mappability").map(|p| p.as_path()) {
+        debug!("Adding mappabililty information from {}", map.display());
         let map_list = region_list_from_bed(map, None)?;
+        debug!("Read in {} regions from {}", map_list.regions().count(), map.display());
         rlist
             .intersect(&map_list)
-            .with_context(|| "Error computing intersect between regions and mappability file")?
+            .with_context(|| "Error computing intersect between regions and mappability file")?;
+        debug!("Regions after adding mappability: {}", rlist.regions().count());
     }
 
     let max_block_size = *m.get_one::<u64>("max_block_size").unwrap();
     split_regions(&mut rlist, max_block_size, &hdr);
+    debug!("Final region count: {}", rlist.regions().count());
     Ok(rlist)
 }

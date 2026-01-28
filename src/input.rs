@@ -13,7 +13,7 @@ pub fn open_input<'a, P: AsRef<Path>>(
 ) -> anyhow::Result<HtsFile<'a>> {
     let name = name.as_ref();
     debug!(
-        "Try to open input file {} with reference {:?}",
+        "Open input file {} with reference {:?}",
         name.display(),
         reference,
     );
@@ -43,7 +43,7 @@ pub fn open_input<'a, P: AsRef<Path>>(
 
     // Try and attach thread pool if presemt
     if let Some(tp) = tpool {
-        debug!("Try to attach thread pool to file");
+        debug!("Attach thread pool to file");
         hts.set_thread_pool(tp)?
     }
     Ok(hts)

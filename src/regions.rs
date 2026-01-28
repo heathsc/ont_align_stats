@@ -35,7 +35,7 @@ pub fn region_list_from_bed(
             continue;
         }
 
-        // Try to pars line as bed
+        // Try to parse line as bed
         let reg = match Reg::parse_bed_from_str(s1) {
             Err(e) => {
                 // Check for special browser or track lines. We check now in case thre is a reference using one of these names
@@ -117,10 +117,10 @@ pub fn split_regions(rlist: &mut RegionList, max_block_size: u64, hdr: &SamHdr) 
                         let reg1 = RegionCoords::new(x, Some(x + s)).unwrap();
                         trace!("Region {:?} (split)", reg1);
                         new_reg.push(reg1);
-                        x += s + 1;
+                        x += s;
                         ns -= 1;
                     }
-                    assert_eq!(x, end + 1);
+                    assert_eq!(x, end);
                 }
             }
             new_regions = Some(new_reg);

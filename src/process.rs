@@ -58,7 +58,7 @@ pub fn process(cfg: Config) -> anyhow::Result<()> {
     let tpool_ref = tpool.as_ref();
 
     let mut faidx = if let Some(p) = cfg.reference() {
-        trace!("Try to open reference {}", p.display());
+        debug!("Open reference {}", p.display());
         let f = Faidx::load_or_create(p);
         if f.is_ok() {
             trace!("Reference index loaded successfully");
@@ -123,11 +123,12 @@ pub fn process(cfg: Config) -> anyhow::Result<()> {
             };
 
             // Load the sequence for the contig if not already done so
-            if prev_reg.is_none() {
-                if reg.reg_contig().is_some() {
+            if preg.is_none() {
+                if reg.reg_contig().is_none() {
                     seq = None
                 } else {
                     seq = if let Some(f) = faidx.as_mut() {
+                        debug!("Loading seqeuence for {}", reg.contig_name());
                         match f.fetch_seq(
                             reg.to_cstr().expect("Error getting contig name"),
                             0,

@@ -40,15 +40,6 @@ pub(super) fn cli_model() -> Command {
                 .hide(true)
                 .help("Maximum block size"),
         )
-        .arg(
-            Arg::new("bam_rec_thread_buffer")
-                .long("bam-rec-thread-buffer")
-                .value_parser(value_parser!(u64).range(128..))
-                .value_name("INT")
-                .default_value("1024")
-                .hide(true)
-                .help("Size of bam rec buffer"),
-        )
         .next_help_heading("Genome")
         .arg(
             Arg::new("mappability")

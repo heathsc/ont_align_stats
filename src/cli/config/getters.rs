@@ -56,8 +56,4 @@ impl Config {
     pub fn n_tasks(&self) -> usize {
         self.n_tasks
     }
-
-    pub fn bam_rec_thread_buffer(&self) -> usize {
-        self.bam_rec_thread_buffer
-    }
 }

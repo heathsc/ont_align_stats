@@ -37,7 +37,6 @@ pub struct Config {
     // Operation options
     n_tasks: usize,
     hts_threads: usize,
-    bam_rec_thread_buffer: usize,
 
     // Reference path
     reference: Option<PathBuf>,

@@ -24,6 +24,6 @@ uzers = "~0.12"
 indexmap = "~2"
 chrono = "~0.4"
 sysinfo = "~0.38"
-m_htslib = { git = "https://github.com/heathsc/m_htslib.git" }
-# m_htslib = { path = "../m_htslib" }
+# m_htslib = { git = "https://github.com/heathsc/m_htslib.git" }
+m_htslib = { path = "../m_htslib" }
 

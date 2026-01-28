@@ -106,13 +106,13 @@ where
     let mut tot_mm = 0;
     let mut tot = 0;
     for (i, v) in m.iter().enumerate() {
-        tot += v[..4].iter().map(|x| *x as u64).sum::<u64>();
         for j in (0..4).filter(|j| *j != i) {
-            let t = m.iter().map(|x| x[j] as u64).sum::<u64>() as f64;
-            let count = v[j] as u64;
-            let proportion = (count as f64) / t;
+            let t = m.iter().map(|x| x[j]).sum::<u64>();
+            let count = v[j];
+            let proportion = count as f64 / t as f64;
             let cp = CountProp { count, proportion };
             tot_mm += count;
+            tot += t;
             map.serialize_entry(format!("{}->{}", BASE[j], BASE[i]).as_str(), &cp)?
         }
     }
