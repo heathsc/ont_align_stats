@@ -5,6 +5,8 @@ use m_htslib::region::RegionList;
 mod getters;
 mod make_config;
 
+use crate::mappability::Mappability;
+
 #[derive(Copy, Clone, Debug, Default)]
 pub enum CompressOpt {
     #[default]
@@ -18,7 +20,8 @@ pub enum CompressOpt {
 pub struct Config {
     input: PathBuf,
     region_list: RegionList,
-
+    mappability: Option<Mappability>,
+    
     // Output Options
     prefix: String,
     dir: Option<PathBuf>,

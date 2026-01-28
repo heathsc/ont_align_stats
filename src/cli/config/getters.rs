@@ -2,6 +2,7 @@ use std::{time::Duration, path::Path};
 
 use m_htslib::region::RegionList;
 
+use crate::mappability::Mappability;
 use super::{Config, CompressOpt};
 
 impl Config {
@@ -11,6 +12,10 @@ impl Config {
     
     pub fn region_list(&self) -> &RegionList {
         &self.region_list
+    }
+    
+    pub fn mappability(&self) -> Option<&Mappability> {
+        self.mappability.as_ref()
     }
     
     pub fn prefix(&self) -> &str {

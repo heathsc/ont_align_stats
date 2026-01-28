@@ -6,6 +6,7 @@ extern crate anyhow;
 mod cli;
 mod collect;
 mod input;
+mod mappability;
 mod metadata;
 mod process;
 mod read;

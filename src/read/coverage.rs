@@ -2,6 +2,7 @@ use std::ops::AddAssign;
 
 use m_htslib::{
     base::BaseQual,
+    region::RegionCoords,
     sam::{
         CigarOp, SeqQualIter,
         record::{
@@ -41,17 +42,19 @@ const MATCH_TAB: [[usize; 5]; 4] = [
 #[derive(Default)]
 pub(super) struct Coverage {
     start: usize,       // Start of region
-    cov: Vec<u32>,      // Coverage // Mappability bit map
+    cov: Vec<u32>,      // Coverage 
+    map: Option<Vec<u8>>, // Mappability bit map
     reference: Vec<u8>, // Reference sequence
     match_counts: [u32; 3],
 }
 
 impl Coverage {
-    fn _calc_lens(start: usize, end: usize) -> usize {
-        assert!(end > start);
-        end - start
+    fn _calc_lens(start: usize, end: usize) -> (usize, usize) {
+        assert!(end >= start);
+        let l = end + 1 - start;
+        (l, (l + 7) >> 3)
     }
-
+    
     pub(super) fn new() -> Self {
         Self::default()
     }
@@ -72,8 +75,8 @@ impl Coverage {
         self.match_counts = [0; 3];
     }
 
-    pub(super) fn reset(&mut self, start: usize, end: usize, rf: Option<&[u8]>) {
-        let len = Self::_calc_lens(start, end);
+    pub(super) fn reset(&mut self, start: usize, end: usize, mappability: Option<&[RegionCoords]>, rf: Option<&[u8]>) {
+        let (len, mlen) = Self::_calc_lens(start, end);
         self.start = start;
         self.cov.clear();
         self.cov.resize(len, 0);
@@ -85,6 +88,28 @@ impl Coverage {
             for c in p {
                 self.reference.push(BASE_TAB[*c as usize])
             }
+        }
+        
+        if let Some(map) = mappability {
+            let m = if let Some(m) = self.map.as_mut() {
+                m.clear();
+                m.resize(mlen, 0);
+                m
+            } else {
+                self.map = Some(vec![0; mlen]);
+                self.map.as_mut().unwrap()
+            };
+            for mv in map.iter() {
+                let s = (mv.start() as usize).max(start);
+                let e = (mv.end().expect("Missing end value for mappability") as usize).min(end);
+                for x in (s..e).map(|i| i - start) {
+                    let ix = x >> 3;
+                    let iy = x & 7;
+                    m[ix] |= 1 << iy;
+                }
+            }
+        } else {
+            self.map = None
         }
     }
 
@@ -102,7 +127,15 @@ impl Coverage {
                 let (b, q) = z.base_qual();
                 if let Some(bs) = b.single_base() {
                     if q >= thresh {
-                        *c += 1;
+                        if let Some(m) = self.map.as_mut() {
+                            let ix = i >> 3;
+                            let iy = i & 7;
+                            if (m[ix] & (1 << iy)) != 0 {
+                                *c += 1
+                            }
+                        } else {
+                            *c += 1
+                        }
                         bc.incr_base(bs);
                     }
                     st.incr_baseq_counts(q, bs as usize);
@@ -126,7 +159,15 @@ impl Coverage {
                 let (b, q) = z.base_qual();
                 if let Some(bs) = b.single_base() {
                     if q >= thresh {
-                        *c += 1;
+                        if let Some(m) = self.map.as_mut() {
+                            let ix = i >> 3;
+                            let iy = i & 7;
+                            if (m[ix] & (1 << iy)) != 0 {
+                                *c += 1
+                            }
+                        } else {
+                            *c += 1
+                        }
                         let rf = self.reference[i] as usize;
                         self.match_counts[MATCH_TAB[bs as usize][rf]] += 1;
                         matches[bs as usize][rf] += 1;
@@ -148,8 +189,29 @@ impl Coverage {
     }
 
     pub(super) fn update_stats(&self, st: &mut Stats) {
-        for c in self.cov.iter().map(|x| *x as usize) {
-            st.incr_coverage(c)
+        if let Some(map) = self.map.as_ref() {
+            let mut it = self.cov.iter();
+            for mut mask in map.iter().copied() {
+                let mut n = 8;
+                while mask != 0 {
+                    if let Some(c) = it.next().map(|x| *x as usize) {
+                        if (mask & 1) == 1 {
+                            st.incr_coverage(c)
+                        }
+                        mask >>= 1;
+                        n -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                if n > 0 {
+                    it.nth(n - 1);
+                }
+            }
+        } else {
+            for c in self.cov.iter().map(|x| *x as usize) {
+                st.incr_coverage(c)
+            }
         }
     }
 }

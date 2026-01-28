@@ -1,15 +1,13 @@
 use std::{io::BufRead, path::Path};
 
-// use crate::mappability::Mappability;
 use anyhow::Context;
 use compress_io::compress::CompressIo;
-// use lazy_static::lazy_static;
+
 use m_htslib::{
     hts::HtsPos,
     region::{Reg, RegionCoords, RegionList},
     sam::SamHdr,
 };
-// use regex::{Regex, RegexSet};
 
 pub fn region_list_from_bed(
     p: &Path,

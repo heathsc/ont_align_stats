@@ -250,7 +250,9 @@ pub fn reader(
                 s.get_seq(begin + 1, end + 1)
                     .expect("Error getting reference sequence for region")
             });
-            cov.reset(begin, end, rf);
+            
+            let map = cfg.mappability().map(|m| m.region_intersect(&reg));
+            cov.reset(begin, end, map, rf);
             Some(rlist)
         };
 
