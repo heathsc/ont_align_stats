@@ -74,9 +74,15 @@ specify multiple genomic regions, however if a large set of regions is required 
 allows the specification of a BED file containing the desired regions. Note that the supplied BED file can
 be compressed and will be decompressed transparently as long as a suitable tool is present in the users PATH.
 
-The --mappability option also specifies a BED file with regions to consider and is used to list
-regions that have previously been annotated as being uniquely mappable; this allows the
-statistics to be calculated just on the mappable fraction of the genome.  If both the --region (or --regions) option 
+The --mappability option also specifies a BED file with regions to consider, but there are
+subtle differences between the --mappability and --regions options. The --mappability regions list
+regions that have previously been annotated as being uniquely mappable; this allows the coverage
+statistics to be calculated just on the mappable fraction of the genome. The mappability BED file can often
+contain many regions (potentially millions), some of which are very small. The --regions option is
+optimized for the case of large regions (on the order of megabases) whereas the --mappability option will handle
+a large number of very small regions efficiently. Supplying the mappability BED file
+as an argument to the --regions option will generally lead to ont_align_stats running
+very slowly. If both the --region (or --regions) option 
 and the --mappability option are provided then the intersect of the two sets of regions is considered for the statistics.
 
 ### <a name="thread"></a>Multithreading options
