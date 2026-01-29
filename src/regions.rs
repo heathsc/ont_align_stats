@@ -88,7 +88,7 @@ pub fn region_list_from_sam_hdr(hdr: &SamHdr) -> anyhow::Result<RegionList> {
 }
 
 pub fn split_regions(rlist: &mut RegionList, max_block_size: u64, hdr: &SamHdr) {
-    let max_block_size = max_block_size as i64;
+    let max_block_size = max_block_size as HtsPos;
     debug!("Splitting regions into block size of maximum {max_block_size}");
 
     for (ctg, crl) in rlist.contig_reg_lists_mut() {
@@ -106,23 +106,38 @@ pub fn split_regions(rlist: &mut RegionList, max_block_size: u64, hdr: &SamHdr) 
                     new_reg.push(*r)
                 } else {
                     trace!("Splitting Region {:?}:{}-{}", ctg, start, end);
-                    let mut ns = 1 + l / max_block_size;
-                    let mut x = start;
-                    while ns > 0 {
-                        assert!(x < end);
-                        let remainder = end - x;
-                        let s = remainder / ns;
-                        let reg1 = RegionCoords::new(x, Some(x + s)).unwrap();
-                        trace!("Region {:?} (split)", reg1);
-                        new_reg.push(reg1);
-                        x += s;
-                        ns -= 1;
-                    }
-                    assert_eq!(x, end);
+                    split_region(start, end, max_block_size, &mut new_reg);
                 }
             }
+            new_regions = Some(new_reg);
+        } else if seq_len as HtsPos > max_block_size {
+            // Full contig split
+            let mut new_reg = Vec::new();
+            split_region(0, seq_len as HtsPos, max_block_size, &mut new_reg);
             new_regions = Some(new_reg);
         }
         crl.set_regions(new_regions);
     }
+}
+
+fn split_region(
+    start: HtsPos,
+    end: HtsPos,
+    max_block_size: HtsPos,
+    reg_vec: &mut Vec<RegionCoords>,
+) {
+    let l = end - start;
+    let mut ns = 1 + l / max_block_size;
+    let mut x = start;
+    while ns > 0 {
+        assert!(x < end);
+        let remainder = end - x;
+        let s = remainder / ns;
+        let reg1 = RegionCoords::new(x, Some(x + s)).unwrap();
+        trace!("Region {:?} (split)", reg1);
+        reg_vec.push(reg1);
+        x += s;
+        ns -= 1;
+    }
+    assert_eq!(x, end);
 }
