@@ -80,10 +80,13 @@ where
 fn serialize_vec<S, T>(ct: &[T], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
-    T: Serialize,
+    T: Serialize + Copy + Into<usize>
 {
     let mut map = serializer.serialize_map(Some(ct.len()))?;
-    for (ix, val) in ct.iter().enumerate() {
+    let a = ct.iter().position(|x| (*x).into() != 0).unwrap_or_default();
+    let b = ct.len() - ct.iter().rev().position(|x| (*x).into() != 0).unwrap_or_default();
+    
+    for (ix, val) in ct[a..b].iter().enumerate() {
         map.serialize_entry(&ix, &val)?;
     }
     map.end()
@@ -186,9 +189,19 @@ impl Serialize for BaseCounts {
     }
 }
 
+impl From<BaseCounts> for usize {
+    fn from(value: BaseCounts) -> Self {
+        value.total() as usize
+    }
+}
+
 impl BaseCounts {
     pub fn incr_base(&mut self, b: u8) {
         self.counts[b as usize] += 1;
+    }
+
+    pub fn total(&self) -> u64 {
+        self.counts.iter().sum()
     }
 }
 
