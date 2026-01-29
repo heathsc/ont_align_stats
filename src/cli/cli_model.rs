@@ -36,8 +36,7 @@ pub(super) fn cli_model() -> Command {
                 .long("max-block-size")
                 .value_parser(value_parser!(u64).range(1000..))
                 .value_name("INT")
-                .default_value("25000000")
-                .hide(true)
+                .default_value("50000000")
                 .help("Maximum block size"),
         )
         .next_help_heading("Genome")

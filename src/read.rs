@@ -235,10 +235,13 @@ pub fn reader(
     while let Ok((reg, prev_reg, seq)) = rx.recv() {
         assert!(!reg.is_all(), "Should not be getting the All Reg type here");
 
-        debug!("Processing region {reg}. Sequence present: {}", seq.is_some());
-        
-        let rlist = if reg.is_unmapped() {
-            None
+        debug!(
+            "Processing region {reg}. Sequence present: {}",
+            seq.is_some()
+        );
+
+        let (rlist, begin, end) = if reg.is_unmapped() {
+            (None, 0, 0)
         } else {
             let rlist = reg
                 .make_htslib_region(&hdr)
@@ -246,14 +249,17 @@ pub fn reader(
 
             let begin = rlist.start() as usize;
             let end = rlist.end() as usize;
-            let rf = seq.as_ref().map(|s| {
-                s.get_seq(begin + 1, end + 1)
-                    .expect("Error getting reference sequence for region")
-            });
-            
+            (Some(rlist), begin, end)
+        };
+        
+        let rf = seq.as_ref().map(|s| {
+            s.get_seq(begin + 1, end + 1)
+                .expect("Error getting reference sequence for region")
+        });
+
+        if rlist.is_some() {
             let map = cfg.mappability().map(|m| m.region_intersect(&reg));
-            cov.reset(begin, end, map, rf);
-            Some(rlist)
+            cov.reset(begin, end, map);
         };
 
         let sam_reader = SamReader::new(&mut hts, &hdr);
@@ -321,7 +327,7 @@ pub fn reader(
                 {
                     let sq = rec.seq_qual();
                     if let Some(rd_type) = get_read_type(&rec) {
-                        process_coverage(&rec, sq, &mut cov, rd_type, &mut st, cfg);
+                        process_coverage(&rec, sq, &mut cov, rd_type, &mut st, cfg, rf);
                     } else {
                         warn!("Illegal read type")
                     }

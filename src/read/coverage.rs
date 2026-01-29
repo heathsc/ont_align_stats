@@ -41,10 +41,9 @@ const MATCH_TAB: [[usize; 5]; 4] = [
 
 #[derive(Default)]
 pub(super) struct Coverage {
-    start: usize,       // Start of region
-    cov: Vec<u32>,      // Coverage 
+    start: usize,         // Start of region
+    cov: Vec<u32>,        // Coverage
     map: Option<Vec<u8>>, // Mappability bit map
-    reference: Vec<u8>, // Reference sequence
     match_counts: [u32; 3],
 }
 
@@ -54,7 +53,7 @@ impl Coverage {
         let l = end + 1 - start;
         (l, (l + 7) >> 3)
     }
-    
+
     pub(super) fn new() -> Self {
         Self::default()
     }
@@ -67,29 +66,17 @@ impl Coverage {
         self.start + self.cov.len()
     }
 
-    pub(super) fn has_reference(&self) -> bool {
-        !self.reference.is_empty()
-    }
-
     pub(super) fn clear_match_counts(&mut self) {
         self.match_counts = [0; 3];
     }
 
-    pub(super) fn reset(&mut self, start: usize, end: usize, mappability: Option<&[RegionCoords]>, rf: Option<&[u8]>) {
+    pub(super) fn reset(&mut self, start: usize, end: usize, mappability: Option<&[RegionCoords]>) {
         let (len, mlen) = Self::_calc_lens(start, end);
         self.start = start;
         self.cov.clear();
         self.cov.resize(len, 0);
-        self.reference.clear();
         self.clear_match_counts();
 
-        if let Some(p) = rf {
-            self.reference.reserve(p.len());
-            for c in p {
-                self.reference.push(BASE_TAB[*c as usize])
-            }
-        }
-        
         if let Some(map) = mappability {
             let m = if let Some(m) = self.map.as_mut() {
                 m.clear();
@@ -144,6 +131,7 @@ impl Coverage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn inc_with_mm(
         &mut self,
         x: usize,
@@ -152,6 +140,7 @@ impl Coverage {
         bc: &mut BaseCounts,
         st: &mut Stats,
         matches: &mut Matches,
+        reference: &[u8],
     ) {
         if x >= self.start {
             let i = x - self.start;
@@ -168,7 +157,7 @@ impl Coverage {
                         } else {
                             *c += 1
                         }
-                        let rf = self.reference[i] as usize;
+                        let rf = BASE_TAB[reference[i] as usize] as usize;
                         self.match_counts[MATCH_TAB[bs as usize][rf]] += 1;
                         matches[bs as usize][rf] += 1;
                         bc.incr_base(bs);
@@ -231,6 +220,7 @@ pub(super) fn process_coverage(
     rd_type: ReadType,
     st: &mut Stats,
     cfg: &Config,
+    rf: Option<&[u8]>,
 ) {
     if let Some(cigar) = rec.cigar() {
         let slen = seq_qual.len();
@@ -287,19 +277,7 @@ pub(super) fn process_coverage(
             // Process cigar op
             match elem.op() {
                 CigarOp::Match | CigarOp::Equal | CigarOp::Diff => {
-                    if !cov.has_reference() {
-                        for _ in 0..l {
-                            let z = seq_qual
-                                .next()
-                                .expect("Mismatch between Cigar and sequence length");
-                            if x < end1 {
-                                cov.inc(x as usize, z, min_qual, &mut bc, st)
-                            } else if x < end {
-                                st.incr(StatType::OverlapBases)
-                            }
-                            x += 1;
-                        }
-                    } else {
+                    if let Some(reference) = rf {
                         for _ in 0..l {
                             let z = seq_qual
                                 .next()
@@ -312,13 +290,27 @@ pub(super) fn process_coverage(
                                     &mut bc,
                                     st,
                                     &mut matches,
+                                    reference,
                                 )
                             } else if x < end {
                                 st.incr(StatType::OverlapBases)
                             }
                             x += 1;
                         }
+                    } else {
+                        for _ in 0..l {
+                            let z = seq_qual
+                                .next()
+                                .expect("Mismatch between Cigar and sequence length");
+                            if x < end1 {
+                                cov.inc(x as usize, z, min_qual, &mut bc, st)
+                            } else if x < end {
+                                st.incr(StatType::OverlapBases)
+                            }
+                            x += 1;
+                        }
                     }
+
                     indel_counts[0] += l1;
                 }
                 CigarOp::SoftClip => {
